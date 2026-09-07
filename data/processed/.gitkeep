@@ -1,0 +1,2 @@
+# Place cleaned, merged, and feature-engineered CSV/Parquet files here.
+# These are outputs of the build_training_data.py and preprocessing.py scripts.

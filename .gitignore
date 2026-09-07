@@ -1,0 +1,38 @@
+# Git ignore rules for medical-risk-xai
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Environment
+.env
+
+# Data (keep structure, ignore content)
+data/raw/*.csv
+data/processed/*.csv
+data/processed/*.parquet
+data/processed/*.npy
+data/processed/*.joblib
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# IDE
+.vscode/
+.idea/
+
+# OS & IDE & Databases
+.DS_Store
+Thumbs.db
+.claude/
+*.db
+
