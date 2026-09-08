@@ -29,6 +29,30 @@ from pydantic import BaseModel, Field
 class LoginPayload(BaseModel):
     email: str
     password: str
+    # SECURITY/MULTI-TENANT: Hospital code scopes the login session
+    hospital_code: Optional[str] = None
+
+
+class HospitalRegisterPayload(BaseModel):
+    name: str = Field(..., min_length=2, max_length=200)
+    address: str = Field(..., min_length=2, max_length=300)
+    contact_number: str = Field(..., min_length=5, max_length=30)
+    latitude: float = Field(..., ge=-90, le=90)
+    longitude: float = Field(..., ge=-180, le=180)
+    hospital_admin_name: str = Field(..., min_length=2, max_length=100)
+    hospital_admin_email: str
+    hospital_admin_password: str = Field(..., min_length=6)
+
+
+class HospitalLoginPayload(BaseModel):
+    hospital_code: str
+    email: str
+    password: str
+
+
+class SuperAdminLoginPayload(BaseModel):
+    email: str
+    password: str
 
 
 class Token(BaseModel):
@@ -56,6 +80,7 @@ class DoctorCreate(BaseModel):
     degree: Optional[str] = None
     years_of_experience: Optional[int] = None
     certifications: Optional[str] = None
+    hospital_code: Optional[str] = None  # Required for hospital_admin registration
 
 
 class DoctorProfileUpdate(BaseModel):
@@ -72,6 +97,7 @@ class PatientCreate(BaseModel):
     email: str
     password: str = Field(..., min_length=6)
     doctor_id: Optional[int] = None
+    hospital_code: str  # Required for patient registration
 
 
 class UserOut(BaseModel):
@@ -87,6 +113,9 @@ class UserOut(BaseModel):
     certifications: Optional[str] = None
     doctor_id: Optional[int] = None
     assigned_doctor: Optional[str] = None   # convenience: doctor name string
+    hospital_id: Optional[int] = None
+    hospital_code: Optional[str] = None
+    hospital_name: Optional[str] = None
     created_at: datetime
 
     class Config:
@@ -465,6 +494,9 @@ class PatientSelfRegister(BaseModel):
     password: str = Field(..., min_length=6)
     preferred_doctor_id: Optional[int] = None
     department_preference: Optional[str] = None
+    # MULTI-TENANT: Hospital code the patient belongs to. Required for patient
+    # self-registration so the account is scoped to a real tenant.
+    hospital_code: str = Field(..., min_length=4, max_length=10)
 
 
 class PatientRegistrationRequestOut(BaseModel):
@@ -573,6 +605,7 @@ class HospitalDoctorAvailabilityOut(BaseModel):
 class HospitalOut(BaseModel):
     id: int
     name: str
+    hospital_code: str
     address: str
     contact_number: str
     latitude: float
@@ -582,6 +615,9 @@ class HospitalOut(BaseModel):
     ventilators_available: int
     blood_bank_available: bool
     emergency_services_available: bool
+    is_active: bool
+    subscription_tier: str
+    created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     doctor_availability: List[HospitalDoctorAvailabilityOut] = []
     distance_km: Optional[float] = None
@@ -601,6 +637,7 @@ class HospitalCreate(BaseModel):
     ventilators_available: int = Field(default=0, ge=0)
     blood_bank_available: bool = False
     emergency_services_available: bool = True
+    # hospital_code will be auto-generated
 
 
 class HospitalUpdate(BaseModel):

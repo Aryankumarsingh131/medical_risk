@@ -1,64 +1,73 @@
 import React, { useState, useEffect } from "react";
 import { useAuth } from "./AuthContext";
 import { apiRequest } from "./api";
+import { useToast } from "./ToastContext";
+import PasswordToggle from "./PasswordToggle";
+import { SkeletonList } from "./Skeleton";
 
 const DEMO_USERS = [
-  { id: 1, label: "Admin ID 1: Admin - System Administrator", email: "admin@hospital.com", role: "admin" },
-  // Doctors
-  { id: 2, label: "Dr. Sharma (Doctor ID 2)", email: "dr.sharma@hospital.com", role: "doctor" },
-  { id: 3, label: "Dr. Mehta (Doctor ID 3)", email: "dr.mehta@hospital.com", role: "doctor" },
-  { id: 4, label: "Dr. Khan (Doctor ID 4)", email: "dr.khan@hospital.com", role: "doctor" },
-  { id: 5, label: "Dr. Rao (Doctor ID 5)", email: "dr.rao@hospital.com", role: "doctor" },
-  { id: 6, label: "Dr. Iyer (Doctor ID 6)", email: "dr.iyer@hospital.com", role: "doctor" },
-  // Patients
-  { id: 7, label: "Arjun (Patient ID 7)", email: "patient.arjun@hospital.com", role: "patient" },
-  { id: 8, label: "Riya (Patient ID 8)", email: "patient.riya@hospital.com", role: "patient" },
-  { id: 9, label: "Rohan (Patient ID 9)", email: "patient.rohan@hospital.com", role: "patient" },
-  { id: 10, label: "Ananya (Patient ID 10)", email: "patient.ananya@hospital.com", role: "patient" },
-  { id: 11, label: "Vikram (Patient ID 11)", email: "patient.vikram@hospital.com", role: "patient" },
-  { id: 12, label: "Pooja (Patient ID 12)", email: "patient.pooja@hospital.com", role: "patient" },
-  { id: 13, label: "Siddharth (Patient ID 13)", email: "patient.siddharth@hospital.com", role: "patient" },
-  { id: 14, label: "Neha (Patient ID 14)", email: "patient.neha@hospital.com", role: "patient" },
-  { id: 15, label: "Aditya (Patient ID 15)", email: "patient.aditya@hospital.com", role: "patient" },
-  { id: 16, label: "Kavya (Patient ID 16)", email: "patient.kavya@hospital.com", role: "patient" },
+  { id: 1, label: "Super Admin (Platform)", email: "superadmin@medrisk.com", role: "super_admin", hospital_code: "" },
+  // City Care (CITY01)
+  { id: 2, label: "City Care Admin", email: "admin.city01@hospital.com", role: "hospital_admin", hospital_code: "CITY01" },
+  { id: 3, label: "Dr. Sharma (Cardiology)", email: "dr.sharma.city01@hospital.com", role: "doctor", hospital_code: "CITY01" },
+  { id: 4, label: "Dr. Mehta (Internal Med)", email: "dr.mehta.city01@hospital.com", role: "doctor", hospital_code: "CITY01" },
+  { id: 5, label: "Dr. Khan (Endocrinology)", email: "dr.khan.city01@hospital.com", role: "doctor", hospital_code: "CITY01" },
+  { id: 8, label: "Arjun (Patient)", email: "patient.arjun.city01@hospital.com", role: "patient", hospital_code: "CITY01" },
+  { id: 10, label: "Rohan (Patient)", email: "patient.rohan.city01@hospital.com", role: "patient", hospital_code: "CITY01" },
+  // Apollo Heart & Emergency (APOLO2)
+  { id: 7, label: "Apollo Admin", email: "admin.apolo2@hospital.com", role: "hospital_admin", hospital_code: "APOLO2" },
+  { id: 6, label: "Dr. Rao (Cardiology)", email: "dr.rao.apolo2@hospital.com", role: "doctor", hospital_code: "APOLO2" },
+  { id: 11, label: "Dr. Iyer (Internal Med)", email: "dr.iyer.apolo2@hospital.com", role: "doctor", hospital_code: "APOLO2" },
+  { id: 12, label: "Dr. Menon (Endocrinology)", email: "dr.menon.apolo2@hospital.com", role: "doctor", hospital_code: "APOLO2" },
+  { id: 13, label: "Pooja (Patient)", email: "patient.pooja.apolo2@hospital.com", role: "patient", hospital_code: "APOLO2" },
+  { id: 14, label: "Siddharth (Patient)", email: "patient.siddharth.apolo2@hospital.com", role: "patient", hospital_code: "APOLO2" },
 ];
 
 const formatDemoUserLabel = (user) => {
   if (user?.label) return user.label;
   const name = user?.name || user?.email || "User";
-  const roleText = user?.role === "admin" ? "Admin" : user?.role === "doctor" ? "Doctor" : "Patient";
+  const roleText = user?.role === "doctor" ? "Doctor" : user?.role === "patient" ? "Patient" : user?.role === "hospital_admin" ? "Hospital Admin" : user?.role === "super_admin" ? "Super Admin" : "Admin";
   const idText = user?.id ? ` ID ${user.id}` : "";
   return `${roleText}${idText}: ${name}`;
 };
 
-export default function Login() {
+export default function Login({ onBackToLanding } = {}) {
   const { login, register } = useAuth();
+  const toast = useToast();
   const [activeMode, setActiveMode] = useState("login"); // 'login' | 'register'
   const [demoUsers, setDemoUsers] = useState(DEMO_USERS);
-  
+  const [demoLoading, setDemoLoading] = useState(true);
+
   // Login form state
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  
+  const [hospitalCode, setHospitalCode] = useState("CITY01");
+
   // Self registration state
   const [regForm, setRegForm] = useState({
     name: "",
     email: "",
     password: "",
+    hospital_code: "CITY01",
     preferred_doctor_id: "",
     department_preference: "Cardiology",
   });
   const [availableDoctors, setAvailableDoctors] = useState([]);
-  
+
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
+  // Load available doctors scoped to the hospital code being registered into.
   useEffect(() => {
-    // Load available doctors for self-registration routing
-    apiRequest("/doctor/all-doctors")
+    const code = regForm.hospital_code;
+    const qs = code ? `?hospital_code=${encodeURIComponent(code.trim().toUpperCase())}` : "";
+    apiRequest(`/doctor/all-doctors${qs}`)
       .then((docs) => setAvailableDoctors(docs || []))
       .catch(() => {});
+  }, [regForm.hospital_code]);
 
+  useEffect(() => {
+    setDemoLoading(true);
     apiRequest("/auth/demo-accounts")
       .then((users) => {
         if (Array.isArray(users) && users.length > 0) {
@@ -71,14 +80,21 @@ export default function Login() {
       })
       .catch(() => {
         setDemoUsers(DEMO_USERS);
-      });
+      })
+      .finally(() => setDemoLoading(false));
   }, []);
 
   const handleDemoSelect = (e) => {
     const selectedEmail = e.target.value;
     if (!selectedEmail) return;
+    const selected = demoUsers.find((u) => u.email === selectedEmail);
     setEmail(selectedEmail);
     setPassword("Demo@123");
+    if (selected?.role === "super_admin") {
+      setHospitalCode("");
+    } else {
+      setHospitalCode(selected?.hospital_code || "");
+    }
     setError("");
   };
 
@@ -87,9 +103,10 @@ export default function Login() {
     setError("");
     setLoading(true);
     try {
-      await login(email, password);
+      await login(email, password, hospitalCode);
+      toast.success("Signed in successfully!");
     } catch (err) {
-      setError(err.message || "Invalid credentials");
+      setError(err.message || "Invalid credentials. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -104,25 +121,39 @@ export default function Login() {
         name: regForm.name,
         email: regForm.email,
         password: regForm.password,
+        hospital_code: regForm.hospital_code,
         preferred_doctor_id: regForm.preferred_doctor_id ? parseInt(regForm.preferred_doctor_id, 10) : null,
         department_preference: regForm.department_preference || "Cardiology",
       });
+      toast.success("Registration successful! Welcome to the platform.");
     } catch (err) {
-      setError(err.message || "Registration failed");
+      setError(err.message || "Registration failed. Please check your details and try again.");
     } finally {
       setLoading(false);
     }
   };
 
-  const adminUser = demoUsers.find((u) => u.role === "admin");
+  const superAdmins = demoUsers.filter((u) => u.role === "super_admin");
+  const hospitalAdmins = demoUsers.filter((u) => u.role === "hospital_admin");
   const doctors = demoUsers.filter((u) => u.role === "doctor");
   const patients = demoUsers.filter((u) => u.role === "patient");
+
 
   return (
     <div className="container" style={{ maxWidth: 460, marginTop: 40 }}>
       <div className="card">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
           <h2 style={{ margin: 0 }}>Medical Risk XAI Platform</h2>
+          {onBackToLanding && (
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={onBackToLanding}
+              style={{ fontSize: "0.8rem", padding: "4px 10px" }}
+            >
+              ← Back to Home
+            </button>
+          )}
         </div>
 
         {/* Mode Switcher */}
@@ -158,29 +189,49 @@ export default function Login() {
             {/* Quick demo login selector */}
             <div className="form-group" style={{ marginBottom: 16 }}>
               <label htmlFor="demo-login-select">Quick Demo Login</label>
-              <select id="demo-login-select" onChange={handleDemoSelect} defaultValue="">
-                <option value="">-- Choose a demo account --</option>
-                {adminUser && (
-                  <option value={adminUser.email}>Admin: {adminUser.label}</option>
-                )}
-                <optgroup label="Doctors">
-                  {doctors.map((d) => (
-                    <option key={d.email} value={d.email}>
-                      {d.label}
+              {demoLoading ? (
+                <SkeletonList items={3} />
+              ) : (
+                <select id="demo-login-select" onChange={handleDemoSelect} defaultValue="">
+                  <option value="">-- Choose a demo account --</option>
+                  {superAdmins.map((a) => (
+                    <option key={a.id} value={a.email}>
+                      Super: {a.label}
                     </option>
                   ))}
-                </optgroup>
-                <optgroup label="Patients">
-                  {patients.map((p) => (
-                    <option key={p.email} value={p.email}>
-                      {p.label}
+                  {hospitalAdmins.map((a) => (
+                    <option key={a.id} value={a.email}>
+                      Hospital: {a.label}
                     </option>
                   ))}
-                </optgroup>
-              </select>
+                  <optgroup label="Doctors">
+                    {doctors.map((d) => (
+                      <option key={d.email} value={d.email}>
+                        {d.label}
+                      </option>
+                    ))}
+                  </optgroup>
+                  <optgroup label="Patients">
+                    {patients.map((p) => (
+                      <option key={p.email} value={p.email}>
+                        {p.label}
+                      </option>
+                    ))}
+                  </optgroup>
+                </select>
+              )}
             </div>
 
             <form className="form" onSubmit={handleLoginSubmit}>
+              <div className="form-group">
+                <label>Hospital Code (leave blank for Super Admin)</label>
+                <input
+                  type="text"
+                  value={hospitalCode}
+                  onChange={(e) => setHospitalCode(e.target.value.toUpperCase())}
+                  placeholder="e.g. CITY01"
+                />
+              </div>
               <div className="form-group">
                 <label>Email Address</label>
                 <input
@@ -193,11 +244,10 @@ export default function Login() {
               </div>
               <div className="form-group">
                 <label>Password</label>
-                <input
-                  type="password"
+                <PasswordToggle
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  placeholder="••••••••"
+                  placeholder="Enter your password"
                   required
                 />
               </div>
@@ -237,12 +287,21 @@ export default function Login() {
                 />
               </div>
               <div className="form-group">
-                <label>Password * (min 6 chars)</label>
+                <label>Hospital Code *</label>
                 <input
-                  type="password"
-                  placeholder="Create a password"
+                  type="text"
+                  placeholder="e.g. CITY01"
+                  value={regForm.hospital_code}
+                  onChange={(e) => setRegForm({ ...regForm, hospital_code: e.target.value.toUpperCase() })}
+                  required
+                />
+              </div>
+              <div className="form-group">
+                <label>Password * (min 6 chars)</label>
+                <PasswordToggle
                   value={regForm.password}
                   onChange={(e) => setRegForm({ ...regForm, password: e.target.value })}
+                  placeholder="Create a password"
                   required
                   minLength={6}
                 />

@@ -1,6 +1,10 @@
 import React, { useState, useEffect } from "react";
 import { useAuth } from "./AuthContext";
 import { apiRequest, downloadPdfReport } from "./api";
+import { useToast } from "./ToastContext";
+import { SkeletonCard } from "./Skeleton";
+import EmptyState from "./EmptyState";
+import CopyButton from "./CopyButton";
 
 export default function PatientDashboard() {
   const [nearbyHospitals, setNearbyHospitals] = useState([]);
@@ -8,11 +12,13 @@ export default function PatientDashboard() {
   const [userLocation, setUserLocation] = useState(null);
   const [assignedDoctorInfo, setAssignedDoctorInfo] = useState(null);
   const { auth } = useAuth();
+  const toast = useToast();
   const [history, setHistory] = useState([]);
   const [diagnoses, setDiagnoses] = useState([]);
   const [msg, setMsg] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [dataLoading, setDataLoading] = useState(true);
   const [pdfLoading, setPdfLoading] = useState(false);
 
   const [profile, setProfile] = useState({
@@ -89,11 +95,15 @@ export default function PatientDashboard() {
       }
     } catch (err) {
       setError(err.message);
+      toast.error("We couldn't load your medical records. Please refresh and try again.");
+    } finally {
+      setDataLoading(false);
     }
   };
 
   useEffect(() => {
     loadData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleProfileSave = async (e) => {
@@ -116,8 +126,10 @@ export default function PatientDashboard() {
         auth?.access_token
       );
       setMsg("Contact details updated successfully.");
+      toast.success("Contact details updated successfully.");
     } catch (err) {
       setError(err.message);
+      toast.error(err.message);
     } finally {
       setLoading(false);
     }
@@ -158,6 +170,14 @@ export default function PatientDashboard() {
       {msg && <div className="alert alert-success">{msg}</div>}
       {error && <div className="alert alert-error">{error}</div>}
 
+      {dataLoading ? (
+        <>
+          <SkeletonCard lines={2} />
+          <SkeletonCard lines={3} />
+          <SkeletonCard lines={4} />
+        </>
+      ) : (
+      <>
       {/* Patient Profile Header */}
       <div
         className="card"
@@ -167,15 +187,19 @@ export default function PatientDashboard() {
           alignItems: "center",
           backgroundColor: "#f8fafc",
           border: "1px solid #cbd5e1",
+          flexWrap: "wrap",
+          gap: 8,
         }}
       >
         <div>
           <h2 style={{ margin: "0 0 4px" }}>Welcome, {auth.name}</h2>
-          <div style={{ fontSize: "0.85rem", color: "#475569" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", fontSize: "0.85rem", color: "#475569" }}>
+            <span>Patient ID: <strong>{auth.id}</strong></span>
+            <CopyButton text={String(auth.id)} label="" />
+            <span style={{ margin: "0 4px" }}>|</span>
             <span>Age: {profile.age ? `${profile.age} years` : "Recorded in evaluation"}</span>
-            <span style={{ margin: "0 8px" }}>|</span>
+            <span style={{ margin: "0 4px" }}>|</span>
             <span>Sex: {profile.sex !== null && profile.sex !== undefined ? (profile.sex === 1 ? "Male" : "Female") : "Recorded"}</span>
-            <span style={{ margin: "0 8px" }}>|</span>
             <span className="badge badge-neutral">Demographics Verified</span>
           </div>
         </div>
@@ -286,7 +310,11 @@ export default function PatientDashboard() {
         </div>
 
         {diagnoses.length === 0 ? (
-          <p style={{ fontSize: "0.85rem", color: "#64748b" }}>No formal diagnoses logged by your attending doctor yet.</p>
+          <EmptyState
+            icon="\u{1F48A}"
+            title="No diagnoses yet"
+            description="Your attending doctor's diagnoses and prescriptions will appear here."
+          />
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {diagnoses.map((diag) => (
@@ -386,7 +414,11 @@ export default function PatientDashboard() {
       <div className="card">
         <h3>Cardiovascular Risk History</h3>
         {history.length === 0 ? (
-          <p style={{ fontSize: "0.85rem", color: "#64748b" }}>No clinical assessments recorded yet.</p>
+          <EmptyState
+            icon="\u{1F4CA}"
+            title="No assessments yet"
+            description="Your cardiovascular risk assessments will appear here once recorded."
+          />
         ) : (
           <div className="table-wrapper">
             <table className="table">
@@ -430,6 +462,8 @@ export default function PatientDashboard() {
           </div>
         )}
       </div>
+      </>
+      )}
     </div>
   );
 }

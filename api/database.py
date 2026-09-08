@@ -40,10 +40,12 @@ load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./medical_risk.db")
 
+_connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 engine = create_engine(
     DATABASE_URL,
-    connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {},
+    connect_args=_connect_args,
     echo=False,
+    pool_pre_ping=True,  # Reconnect on stale connections (important for cloud DBs)
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -61,9 +63,13 @@ class User(Base):
     name = Column(String(100), nullable=True)
     email = Column(String(120), unique=True, index=True, nullable=False)
     hashed_password = Column(String, nullable=False)
-    role = Column(String(20), default="patient")   # admin | doctor | patient
+    role = Column(String(20), default="patient")   # super_admin | hospital_admin | doctor | patient
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Hospital (tenant) - required for all users except super_admin
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=True, index=True)
+    hospital_code = Column(String(10), nullable=True, index=True)  # Duplicate for easy lookup
 
     # Doctor-specific
     specialization = Column(String(100), nullable=True)
@@ -86,6 +92,7 @@ class User(Base):
     pending_assignment = Column(Boolean, default=False)
 
     # Relationships
+    hospital = relationship("Hospital", back_populates="users", foreign_keys=[hospital_id])
     doctor = relationship("User", remote_side=[id], backref="assigned_patients")
     assessments = relationship(
         "PatientAssessment",
@@ -127,6 +134,7 @@ class Hospital(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(150), nullable=False)
+    hospital_code = Column(String(10), unique=True, index=True, nullable=True)  # Unique tenant code (nullable for legacy rows)
     address = Column(String(255), nullable=False)
     contact_number = Column(String(30), nullable=False)
     latitude = Column(Float, nullable=False)
@@ -136,9 +144,14 @@ class Hospital(Base):
     ventilators_available = Column(Integer, default=0)
     blood_bank_available = Column(Boolean, default=False)
     emergency_services_available = Column(Boolean, default=True)
+    is_active = Column(Boolean, default=True)  # Enable/disable hospital tenant
+    subscription_tier = Column(String(50), default="standard")  # For future SaaS pricing
+    created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+    # Relationships
     doctors = relationship("HospitalDoctorAvailability", back_populates="hospital", cascade="all, delete-orphan")
+    users = relationship("User", back_populates="hospital", foreign_keys="User.hospital_id")
 
 
 class HospitalDoctorAvailability(Base):
@@ -156,6 +169,9 @@ class DoctorDiagnosis(Base):
     __tablename__ = "doctor_diagnoses"
 
     id = Column(Integer, primary_key=True, index=True)
+
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False, index=True)
+
     patient_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     doctor_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     diagnosis_title = Column(String(200), nullable=False)
@@ -178,6 +194,9 @@ class ClinicalDraft(Base):
     __tablename__ = "clinical_drafts"
 
     id = Column(Integer, primary_key=True, index=True)
+
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False, index=True)
+
     doctor_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     draft_name = Column(String(100), default="Guest Patient Draft")
     guest_identifier = Column(String(100), nullable=True)
@@ -198,6 +217,9 @@ class PatientAssessment(Base):
     __tablename__ = "patient_assessments"
 
     id = Column(Integer, primary_key=True, index=True)
+
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False, index=True)
+
     patient_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     doctor_id = Column(Integer, ForeignKey("users.id"), nullable=True)
 
@@ -252,6 +274,9 @@ class BloodTestResult(Base):
     __tablename__ = "blood_test_results"
 
     id = Column(Integer, primary_key=True, index=True)
+
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False, index=True)
+
     patient_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     recorded_by_doctor_id = Column(Integer, ForeignKey("users.id"), nullable=True)
 
@@ -288,8 +313,11 @@ class AuditLog(Base):
     __tablename__ = "audit_logs"
 
     id = Column(Integer, primary_key=True, index=True)
+
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=True, index=True)
+
     actor_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    actor_role = Column(String(20), nullable=False)   # admin | doctor | patient
+    actor_role = Column(String(20), nullable=False)   # super_admin | hospital_admin | doctor | patient
 
     # Action slug e.g. 'created_patient', 'created_doctor', 'reassigned_patient',
     # 'added_record', 'added_blood_test'
@@ -329,6 +357,9 @@ class Medicine(Base):
     __tablename__ = "medicines"
 
     id = Column(Integer, primary_key=True, index=True)
+
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False, index=True)
+
     name = Column(String(150), nullable=False)
     generic_name = Column(String(150), nullable=True)
     category = Column(String(100), nullable=True)          # e.g. Antihypertensive, Anticoagulant
@@ -372,6 +403,9 @@ class PatientRegistrationRequest(Base):
     __tablename__ = "patient_registration_requests"
 
     id = Column(Integer, primary_key=True, index=True)
+
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False, index=True)
+
     patient_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     preferred_doctor_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     department_preference = Column(String(100), nullable=True)  # e.g. Cardiology, General
@@ -429,14 +463,57 @@ def get_db():
 
 def create_tables() -> None:
     Base.metadata.create_all(bind=engine)
-    # Check and add missing columns for SQLite if needed
+
+    # SQLite-only: add missing columns for legacy databases that predate migrations.
+    # Skipped on PostgreSQL — SQLAlchemy create_all() handles the full schema.
+    if not DATABASE_URL.startswith("sqlite"):
+        return
+
     with engine.connect() as conn:
         try:
+            # Check hospitals table columns
+            result_h = conn.execute(text("PRAGMA table_info(hospitals)"))
+            hospital_cols = [row[1] for row in result_h.fetchall()]
+            if "hospital_code" not in hospital_cols:
+                conn.execute(text("ALTER TABLE hospitals ADD COLUMN hospital_code VARCHAR(10)"))
+            if "is_active" not in hospital_cols:
+                conn.execute(text("ALTER TABLE hospitals ADD COLUMN is_active BOOLEAN DEFAULT 1"))
+            if "subscription_tier" not in hospital_cols:
+                conn.execute(text("ALTER TABLE hospitals ADD COLUMN subscription_tier VARCHAR(50) DEFAULT 'standard'"))
+            if "created_at" not in hospital_cols:
+                conn.execute(text("ALTER TABLE hospitals ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP"))
+            conn.commit()
+
             # Check users table columns
             result = conn.execute(text("PRAGMA table_info(users)"))
             cols = [row[1] for row in result.fetchall()]
             if "pending_assignment" not in cols:
                 conn.execute(text("ALTER TABLE users ADD COLUMN pending_assignment BOOLEAN DEFAULT 0"))
-                conn.commit()
+            if "hospital_id" not in cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN hospital_id INTEGER"))
+            if "hospital_code" not in cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN hospital_code VARCHAR(10)"))
+            conn.commit()
+
+            # Add hospital_id to all relevant tables
+            tables_to_update = [
+                "doctor_diagnoses",
+                "patient_assessments",
+                "blood_test_results",
+                "clinical_drafts",
+                "medicines",
+                "patient_registration_requests",
+                "audit_logs",
+            ]
+            for table in tables_to_update:
+                try:
+                    result_t = conn.execute(text(f"PRAGMA table_info({table})"))
+                    t_cols = [row[1] for row in result_t.fetchall()]
+                    if "hospital_id" not in t_cols:
+                        conn.execute(text(f"ALTER TABLE {table} ADD COLUMN hospital_id INTEGER"))
+                except Exception:
+                    pass
+            conn.commit()
         except Exception:
             pass
+

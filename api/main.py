@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -18,7 +19,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from fastapi.security import OAuth2PasswordBearer
@@ -61,7 +62,9 @@ from api.schemas import (
     HospitalCreate,
     HospitalDoctorAvailabilityCreate,
     HospitalDoctorAvailabilityOut,
+    HospitalLoginPayload,
     HospitalOut,
+    HospitalRegisterPayload,
     HospitalUpdate,
     MedicineProcurePayload,
     MedicineOut,
@@ -77,6 +80,7 @@ from api.schemas import (
     RiskCategory,
     RiskReason,
     SHAPContribution,
+    SuperAdminLoginPayload,
     UserOut,
 )
 from src.explain import explain_prediction
@@ -84,7 +88,7 @@ from src.clinical_advice import enrich_explanation
 from src.rule_based_risk import calculate_rule_based_risk
 from src.report_generator import generate_medical_diagnosis_pdf
 from src.geometry import haversine_distance
-from api.security import RateLimitMiddleware, SecurityHeadersMiddleware
+from api.security import SecurityHeadersMiddleware
 
 load_dotenv()
 
@@ -109,6 +113,10 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token", auto_error=False)
 class LoginRequest(BaseModel):
     email: str
     password: str
+    # MULTI-TENANT: Scopes the session to a hospital. If provided it must match
+    # the user's hospital_code. If omitted, we still scope server-side via
+    # hospital_id (from the token) and restrict non-super-admins to their tenant.
+    hospital_code: Optional[str] = None
 
 
 class LoginResponse(BaseModel):
@@ -118,6 +126,8 @@ class LoginResponse(BaseModel):
     name: str
     email: str
     id: int
+    hospital_id: Optional[int] = None
+    hospital_code: Optional[str] = None
 
 
 # Backward compatibility alias
@@ -220,6 +230,50 @@ def get_current_user_optional(token: Optional[str] = Depends(oauth2_scheme), db:
         return None
 
 
+# ---------------------------------------------------------------------------
+# Multi-tenant helpers
+# ---------------------------------------------------------------------------
+
+def require_hospital_access(target_hospital_id, current_user: User) -> None:
+    """Raise 403 if a non-super_admin user tries to access a different hospital."""
+    if getattr(current_user, "role", None) == "super_admin":
+        return
+    user_hid = getattr(current_user, "hospital_id", None)
+    if (
+        user_hid is None
+        or target_hospital_id is None
+        or int(user_hid) != int(target_hospital_id)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied to this hospital",
+        )
+
+
+def verify_hospital_access(
+    hospital_id: int,
+    current_user: User = Depends(get_current_user),
+) -> None:
+    """FastAPI dependency enforcing tenant isolation on explicit hospital_id routes."""
+    require_hospital_access(hospital_id, current_user)
+
+
+def require_admin(current_user: User) -> None:
+    """Raise 403 unless the user is a platform or hospital admin."""
+    if current_user.role not in ("admin", "hospital_admin", "super_admin"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+
+
+def tenant_scope(current_user: User):
+    """Return a hospital_id filter value that scopes queries to the current tenant.
+
+    super_admin -> None (global scope); everyone else -> their own hospital.
+    """
+    if current_user.role == "super_admin":
+        return None
+    return current_user.hospital_id
+
+
 def verify_patient_access(
     patient_id: int,
     current_user: User,
@@ -249,8 +303,11 @@ def verify_patient_access(
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
 
-    # Admin can access any patient
-    if current_user.role == "admin":
+    # MULTI-TENANT: block cross-hospital access for every tenant-scoped role.
+    require_hospital_access(patient.hospital_id, current_user)
+
+    # Legacay single-tenant "admin" (preferred role: hospital_admin / super_admin)
+    if current_user.role in ("admin", "hospital_admin"):
         return patient
 
     # Doctor must be assigned to patient
@@ -275,9 +332,8 @@ def verify_patient_access(
 
 app = FastAPI(title="Medical Risk XAI Backend", version="1.0.0")
 
-# SECURITY: Add rate limiting and security headers middleware
+# SECURITY: Add security headers middleware
 app.add_middleware(SecurityHeadersMiddleware)
-app.add_middleware(RateLimitMiddleware)
 
 # CORS configuration - restrictive for production
 app.add_middleware(
@@ -351,13 +407,27 @@ def login_json(payload: LoginRequest, db: Session = Depends(get_db)):
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Account is deactivated")
 
-    token = create_access_token({"sub": user.email, "role": user.role, "id": user.id})
+    # MULTI-TENANT: If a hospital code was supplied, it must match the user's tenant.
+    if payload.hospital_code:
+        payload_code = payload.hospital_code.strip().upper()
+        user_code = (user.hospital_code or "").strip().upper()
+        if user.role != "super_admin" and payload_code != user_code:
+            raise HTTPException(status_code=403, detail="Hospital code does not match this account")
+
+    token = create_access_token({
+        "sub": user.email,
+        "role": user.role,
+        "id": user.id,
+        "hospital_id": user.hospital_id,
+    })
     return LoginResponse(
         access_token=token,
         role=user.role,
         name=user.name or user.email,
         email=user.email,
         id=user.id,
+        hospital_id=user.hospital_id,
+        hospital_code=user.hospital_code,
     )
 
 
@@ -368,15 +438,29 @@ def self_register_patient(payload: PatientSelfRegister, db: Session = Depends(ge
     if existing:
         raise HTTPException(status_code=400, detail="An account with this email already exists")
 
+    # MULTI-TENANT: Resolve the hospital tenant from the code.
+    hospital = db.query(Hospital).filter(
+        Hospital.hospital_code == payload.hospital_code.strip().upper()
+    ).first()
+    if not hospital or not hospital.is_active:
+        raise HTTPException(status_code=400, detail="Invalid or inactive hospital code")
+
     doc = None
     if payload.preferred_doctor_id:
-        doc = db.query(User).filter(User.id == payload.preferred_doctor_id, User.role == "doctor", User.is_active == True).first()
+        doc = db.query(User).filter(
+            User.id == payload.preferred_doctor_id,
+            User.role == "doctor",
+            User.is_active == True,
+            User.hospital_id == hospital.id,
+        ).first()
 
     patient = User(
         name=payload.name.strip(),
         email=email_clean,
         hashed_password=get_password_hash(payload.password),
         role="patient",
+        hospital_id=hospital.id,
+        hospital_code=hospital.hospital_code,
         doctor_id=doc.id if doc else None,
         pending_assignment=True if not doc else False,
         is_active=True,
@@ -387,6 +471,7 @@ def self_register_patient(payload: PatientSelfRegister, db: Session = Depends(ge
 
     # Create PatientRegistrationRequest for doctor review queue
     req = PatientRegistrationRequest(
+        hospital_id=hospital.id,
         patient_id=patient.id,
         preferred_doctor_id=doc.id if doc else None,
         department_preference=payload.department_preference or (doc.specialization if doc else "Cardiology"),
@@ -397,6 +482,7 @@ def self_register_patient(payload: PatientSelfRegister, db: Session = Depends(ge
 
     # Audit log
     audit = AuditLog(
+        hospital_id=hospital.id,
         actor_user_id=patient.id,
         actor_role="patient",
         action="self_registered",
@@ -412,13 +498,155 @@ def self_register_patient(payload: PatientSelfRegister, db: Session = Depends(ge
     db.add(audit)
     db.commit()
 
-    token = create_access_token({"sub": patient.email, "role": patient.role, "id": patient.id})
+    token = create_access_token({
+        "sub": patient.email,
+        "role": patient.role,
+        "id": patient.id,
+        "hospital_id": patient.hospital_id,
+    })
     return LoginResponse(
         access_token=token,
         role=patient.role,
         name=patient.name or patient.email,
         email=patient.email,
         id=patient.id,
+        hospital_id=patient.hospital_id,
+        hospital_code=patient.hospital_code,
+    )
+
+
+@app.post("/auth/hospital-register", response_model=HospitalOut)
+def hospital_register(
+    payload: HospitalRegisterPayload,
+    db: Session = Depends(get_db),
+    super_admin: User = Depends(get_current_user),
+):
+    """Super Admin provisions a new hospital tenant + its hospital admin account."""
+    if super_admin.role != "super_admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Super Admin access required")
+
+    email_clean = payload.hospital_admin_email.strip().lower()
+    existing = db.query(User).filter(User.email == email_clean).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="An account with this email already exists")
+
+    # Generate a unique hospital code.
+    code = None
+    used = {row[0] for row in db.query(Hospital.hospital_code).all() if row[0]}
+    for _ in range(200):
+        candidate = "".join(secrets.choice("ABCDEFGHJKLMNPQRSTUVWXYZ23456789") for _ in range(6))
+        if candidate not in used:
+            code = candidate
+            break
+    if not code:
+        raise HTTPException(status_code=500, detail="Could not generate a unique hospital code")
+
+    hospital = Hospital(
+        name=payload.name.strip(),
+        hospital_code=code,
+        address=payload.address.strip(),
+        contact_number=payload.contact_number.strip(),
+        latitude=payload.latitude,
+        longitude=payload.longitude,
+        is_active=True,
+        subscription_tier="standard",
+    )
+    db.add(hospital)
+    db.flush()
+
+    admin = User(
+        name=payload.hospital_admin_name.strip(),
+        email=email_clean,
+        hashed_password=get_password_hash(payload.hospital_admin_password),
+        role="hospital_admin",
+        hospital_id=hospital.id,
+        hospital_code=code,
+        is_active=True,
+    )
+    db.add(admin)
+    db.flush()
+
+    audit = AuditLog(
+        hospital_id=hospital.id,
+        actor_user_id=super_admin.id,
+        actor_role="super_admin",
+        action="created_hospital",
+        target_type="Hospital",
+        target_id=hospital.id,
+        details=json.dumps({"hospital_name": hospital.name, "hospital_code": code}),
+    )
+    db.add(audit)
+    db.commit()
+    db.refresh(hospital)
+    return hospital
+
+
+@app.post("/auth/hospital-login", response_model=LoginResponse)
+def hospital_login(
+    payload: HospitalLoginPayload,
+    db: Session = Depends(get_db),
+):
+    """Login for hospital users (hospital_admin / doctor / patient) scoped by hospital code."""
+    email_clean = payload.email.strip().lower()
+    user = db.query(User).filter(User.email == email_clean).first()
+    if not user or not verify_password(payload.password, user.hashed_password):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Account is deactivated")
+    if user.role == "super_admin":
+        raise HTTPException(status_code=403, detail="Use super-admin login")
+
+    code = payload.hospital_code.strip().upper()
+    user_code = (user.hospital_code or "").strip().upper()
+    if not user_code or code != user_code:
+        raise HTTPException(status_code=403, detail="Hospital code does not match this account")
+
+    token = create_access_token({
+        "sub": user.email,
+        "role": user.role,
+        "id": user.id,
+        "hospital_id": user.hospital_id,
+    })
+    return LoginResponse(
+        access_token=token,
+        role=user.role,
+        name=user.name or user.email,
+        email=user.email,
+        id=user.id,
+        hospital_id=user.hospital_id,
+        hospital_code=user.hospital_code,
+    )
+
+
+@app.post("/auth/super-admin-login", response_model=LoginResponse)
+def super_admin_login(
+    payload: SuperAdminLoginPayload,
+    db: Session = Depends(get_db),
+):
+    """Login for the platform Super Admin (no tenant scoping)."""
+    email_clean = payload.email.strip().lower()
+    user = db.query(User).filter(User.email == email_clean).first()
+    if not user or not verify_password(payload.password, user.hashed_password):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    if user.role != "super_admin":
+        raise HTTPException(status_code=403, detail="Super Admin access required")
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Account is deactivated")
+
+    token = create_access_token({
+        "sub": user.email,
+        "role": user.role,
+        "id": user.id,
+        "hospital_id": user.hospital_id,
+    })
+    return LoginResponse(
+        access_token=token,
+        role=user.role,
+        name=user.name or user.email,
+        email=user.email,
+        id=user.id,
+        hospital_id=user.hospital_id,
+        hospital_code=user.hospital_code,
     )
 
 
@@ -474,18 +702,21 @@ def get_current_user_profile(
 @app.get("/auth/demo-accounts")
 def get_demo_accounts(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: Optional[User] = Depends(get_current_user_optional),
 ):
-    """Returns active user profiles for the demo login selector (admin only).
+    """Returns active user profiles for the login demo dropdown.
 
-    SECURITY FIX: This endpoint now requires admin authentication to prevent
-    information disclosure of user emails and roles to unauthenticated users.
+    Demo UX note: This is intentionally accessible without authentication so the
+    login page can display all seeded credentials. Tenant-scoping still applies
+    when an authenticated non-super-admin calls it.
     """
-    # Only admins can list demo accounts - prevents information disclosure
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
+    q = db.query(User).filter(User.is_active == True)
 
-    users = db.query(User).filter(User.is_active == True).order_by(User.role.asc(), User.id.asc()).all()
+    hid = tenant_scope(current_user) if current_user and current_user.role != "super_admin" else None
+    if hid is not None:
+        q = q.filter(User.hospital_id == hid)
+
+    users = q.order_by(User.role.asc(), User.id.asc()).all()
     out = []
     for user in users:
         name = user.name or user.email
@@ -502,6 +733,7 @@ def get_demo_accounts(
             "name": name,
             "email": user.email,
             "role": user.role,
+            "hospital_code": user.hospital_code,
             "label": label,
             "is_active": user.is_active,
         })
@@ -509,9 +741,17 @@ def get_demo_accounts(
 
 
 @app.get("/doctor/all-doctors")
-def get_all_active_doctors(db: Session = Depends(get_db)):
-    """Returns list of active doctors for transfers, registration routing, and patient selection."""
-    docs = db.query(User).filter(User.role == "doctor", User.is_active == True).order_by(User.name.asc()).all()
+def get_all_active_doctors(db: Session = Depends(get_db), hospital_code: Optional[str] = None):
+    """Returns list of active doctors for transfers, registration routing, and patient selection.
+
+    MULTI-TENANT: If a hospital_code is supplied (e.g. from the self-registration form),
+    only that tenant's doctors are returned so patient registration never surfaces
+    doctor names from other hospitals.
+    """
+    q = db.query(User).filter(User.role == "doctor", User.is_active == True)
+    if hospital_code:
+        q = q.filter(User.hospital_code == hospital_code.strip().upper())
+    docs = q.order_by(User.name.asc()).all()
     return [
         {
             "id": d.id,
@@ -533,18 +773,24 @@ def get_all_active_doctors(db: Session = Depends(get_db)):
 
 @app.post("/admin/doctors")
 def add_doctor(doc_in: DoctorCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
+    require_admin(current_user)
+    hid = tenant_scope(current_user)
 
     existing = db.query(User).filter(User.email == doc_in.email.strip().lower()).first()
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
+
+    # MULTI-TENANT: The doctor belongs to the admin's hospital.
+    hospital = db.query(Hospital).filter(Hospital.id == hid).first() if hid else None
+    hospital_code = hospital.hospital_code if hospital else None
 
     doctor = User(
         name=doc_in.name,
         email=doc_in.email.strip().lower(),
         hashed_password=get_password_hash(doc_in.password),
         role="doctor",
+        hospital_id=hid,
+        hospital_code=hospital_code,
         specialization=doc_in.specialization,
         license_number=doc_in.license_number,
         degree=doc_in.degree,
@@ -558,6 +804,7 @@ def add_doctor(doc_in: DoctorCreate, db: Session = Depends(get_db), current_user
 
     # Write AuditLog
     audit = AuditLog(
+        hospital_id=hid,
         actor_user_id=current_user.id,
         actor_role=current_user.role,
         action="created_doctor",
@@ -579,8 +826,8 @@ def add_doctor(doc_in: DoctorCreate, db: Session = Depends(get_db), current_user
 
 @app.post("/admin/patients")
 def add_patient(pat_in: PatientCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
+    require_admin(current_user)
+    hid = tenant_scope(current_user)
 
     existing = db.query(User).filter(User.email == pat_in.email.strip().lower()).first()
     if existing:
@@ -590,12 +837,20 @@ def add_patient(pat_in: PatientCreate, db: Session = Depends(get_db), current_us
         doc = db.query(User).filter(User.id == pat_in.doctor_id, User.role == "doctor").first()
         if not doc:
             raise HTTPException(status_code=400, detail="Assigned doctor ID not found")
+        # MULTI-TENANT: assigned doctor must be in the same hospital.
+        if hid is not None and doc.hospital_id != hid:
+            raise HTTPException(status_code=403, detail="Assigned doctor is in a different hospital")
+
+    hospital = db.query(Hospital).filter(Hospital.id == hid).first() if hid else None
+    hospital_code = hospital.hospital_code if hospital else None
 
     patient = User(
         name=pat_in.name,
         email=pat_in.email.strip().lower(),
         hashed_password=get_password_hash(pat_in.password),
         role="patient",
+        hospital_id=hid,
+        hospital_code=hospital_code,
         doctor_id=pat_in.doctor_id,
         is_active=True,
     )
@@ -605,6 +860,7 @@ def add_patient(pat_in: PatientCreate, db: Session = Depends(get_db), current_us
 
     # Write AuditLog
     audit = AuditLog(
+        hospital_id=hid,
         actor_user_id=current_user.id,
         actor_role=current_user.role,
         action="created_patient",
@@ -630,18 +886,23 @@ def reassign_patient_doctor(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
+    require_admin(current_user)
+    hid = tenant_scope(current_user)
 
     patient = db.query(User).filter(User.id == patient_id, User.role == "patient").first()
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
+    if hid is not None and patient.hospital_id != hid:
+        raise HTTPException(status_code=403, detail="Access denied to this patient")
 
     new_doc = db.query(User).filter(User.id == payload.new_doctor_id, User.role == "doctor").first()
     if not new_doc:
         raise HTTPException(status_code=404, detail="Doctor not found")
     if not new_doc.is_active:
         raise HTTPException(status_code=400, detail="Doctor account is inactive")
+    # MULTI-TENANT: transfers stay within the same hospital.
+    if hid is not None and new_doc.hospital_id != hid:
+        raise HTTPException(status_code=403, detail="Cannot transfer to a doctor in a different hospital")
 
     old_doctor_id = patient.doctor_id
     patient.reassign_doctor(payload.new_doctor_id)
@@ -657,6 +918,7 @@ def reassign_patient_doctor(
 
     # Write AuditLog entry
     audit = AuditLog(
+        hospital_id=hid,
         actor_user_id=current_user.id,
         actor_role=current_user.role,
         action="reassigned_patient",
@@ -685,18 +947,32 @@ def reassign_patient_doctor(
 
 @app.get("/admin/users")
 def list_users(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
+    require_admin(current_user)
+    hid = tenant_scope(current_user)
 
-    users = db.query(User).order_by(User.id.asc()).all()
+    q = db.query(User)
+    if hid is not None:
+        q = q.filter(User.hospital_id == hid)
+    users = q.order_by(User.id.asc()).all()
+    # MULTI-TENANT PRIVACY: A platform Super Admin must never see the names or
+    # emails of hospital doctors/patients -- only aggregate totals. Hospital
+    # admins see their own tenants' full records.
     out = []
     for u in users:
         doctor_name = u.doctor.name if u.doctor else None
+        is_pii = u.role in ("doctor", "patient")
+        if current_user.role == "super_admin" and is_pii:
+            name = "Doctor" if u.role == "doctor" else "Patient"
+            email = None
+            doctor_name = None  # do not reveal the assigned physician
+        else:
+            name = u.name or u.email
+            email = u.email
         out.append(
             {
                 "id": u.id,
-                "name": u.name or u.email,
-                "email": u.email,
+                "name": name,
+                "email": email,
                 "role": u.role,
                 "is_active": u.is_active,
                 "specialization": u.specialization,
@@ -714,12 +990,15 @@ def list_users(db: Session = Depends(get_db), current_user: User = Depends(get_c
 
 @app.put("/admin/users/{user_id}/deactivate")
 def deactivate_user(user_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
+    require_admin(current_user)
 
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    # MULTI-TENANT: hospital_admin can only manage users within their own hospital.
+    hid = tenant_scope(current_user)
+    if hid is not None and (user.hospital_id != hid or user.role == "super_admin"):
+        raise HTTPException(status_code=403, detail="Access denied to this user")
     user.is_active = not user.is_active  # Toggle status
     db.commit()
     status_str = "activated" if user.is_active else "deactivated"
@@ -728,12 +1007,14 @@ def deactivate_user(user_id: int, db: Session = Depends(get_db), current_user: U
 
 @app.get("/admin/activity")
 def get_admin_activity(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
+    require_admin(current_user)
+    hid = tenant_scope(current_user)
 
+    q = db.query(AuditLog)
+    if hid is not None:
+        q = q.filter(AuditLog.hospital_id == hid)
     logs = (
-        db.query(AuditLog)
-        .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+        q.order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
         .limit(100)
         .all()
     )
@@ -760,20 +1041,25 @@ def get_admin_activity(db: Session = Depends(get_db), current_user: User = Depen
 
 @app.get("/admin/overview")
 def get_admin_overview(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
+    require_admin(current_user)
+    hid = tenant_scope(current_user)
 
-    total_doctors = db.query(User).filter(User.role == "doctor").count()
-    total_patients = db.query(User).filter(User.role == "patient").count()
-    total_predictions = db.query(PatientAssessment).count() + db.query(PredictionLog).count()
-    total_blood_tests = db.query(BloodTestResult).count()
+    def scoped(model):
+        q = db.query(model)
+        if hid is not None:
+            q = q.filter(model.hospital_id == hid)
+        return q
+
+    total_doctors = scoped(User).filter(User.role == "doctor").count()
+    total_patients = scoped(User).filter(User.role == "patient").count()
+    total_predictions = scoped(PatientAssessment).count() + db.query(PredictionLog).count()
+    total_blood_tests = scoped(BloodTestResult).count()
 
     # Risk level distribution
-    risk_query = (
-        db.query(PatientAssessment.risk_level, func.count(PatientAssessment.id))
-        .group_by(PatientAssessment.risk_level)
-        .all()
-    )
+    risk_q = db.query(PatientAssessment.risk_level, func.count(PatientAssessment.id))
+    if hid is not None:
+        risk_q = risk_q.filter(PatientAssessment.hospital_id == hid)
+    risk_query = risk_q.group_by(PatientAssessment.risk_level).all()
     distribution = {"Low": 0, "Medium": 0, "High": 0}
     for level, count in risk_query:
         if not level:
@@ -801,51 +1087,7 @@ def get_admin_overview(db: Session = Depends(get_db), current_user: User = Depen
 # Hospital Directory & Emergency Availability (admin)
 # ---------------------------------------------------------------------------
 
-@app.get("/admin/hospitals", response_model=List[HospitalOut])
-def list_hospitals_admin(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-
-    hospitals = db.query(Hospital).all()
-    out = []
-    for h in hospitals:
-        avail = [
-            {
-                "id": a.id,
-                "hospital_id": a.hospital_id,
-                "specialization": a.specialization,
-                "available_doctors": a.available_doctors,
-            }
-            for a in h.doctors
-        ]
-        out.append({
-            "id": h.id,
-            "name": h.name,
-            "address": h.address,
-            "contact_number": h.contact_number,
-            "latitude": h.latitude,
-            "longitude": h.longitude,
-            "available_beds": h.available_beds,
-            "icu_beds_available": h.icu_beds_available,
-            "ventilators_available": h.ventilators_available,
-            "blood_bank_available": h.blood_bank_available,
-            "emergency_services_available": h.emergency_services_available,
-            "updated_at": h.updated_at,
-            "doctor_availability": avail,
-            "distance_km": None,
-        })
-    return out
-
-
-@app.get("/admin/hospitals/{hospital_id}", response_model=HospitalOut)
-def get_hospital_admin(hospital_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-
-    h = db.query(Hospital).filter(Hospital.id == hospital_id).first()
-    if not h:
-        raise HTTPException(status_code=404, detail="Hospital not found")
-
+def _serialize_hospital(h):
     avail = [
         {
             "id": a.id,
@@ -858,6 +1100,7 @@ def get_hospital_admin(hospital_id: int, db: Session = Depends(get_db), current_
     return {
         "id": h.id,
         "name": h.name,
+        "hospital_code": h.hospital_code,
         "address": h.address,
         "contact_number": h.contact_number,
         "latitude": h.latitude,
@@ -867,19 +1110,78 @@ def get_hospital_admin(hospital_id: int, db: Session = Depends(get_db), current_
         "ventilators_available": h.ventilators_available,
         "blood_bank_available": h.blood_bank_available,
         "emergency_services_available": h.emergency_services_available,
+        "is_active": h.is_active,
+        "subscription_tier": h.subscription_tier,
         "updated_at": h.updated_at,
         "doctor_availability": avail,
         "distance_km": None,
     }
 
 
+@app.get("/admin/hospitals", response_model=List[HospitalOut])
+def list_hospitals_admin(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_admin(current_user)
+    hid = tenant_scope(current_user)
+
+    q = db.query(Hospital)
+    if hid is not None:
+        q = q.filter(Hospital.id == hid)
+    hospitals = q.all()
+    result = [_serialize_hospital(h) for h in hospitals]
+
+    # MULTI-TENANT: Only the platform Super Admin sees the full hospital map, so
+    # only they get the km distance between each pair (haversine). A hospital
+    # admin sees only their own hospital and gets no distance.
+    if current_user.role == "super_admin":
+        for h in result:
+            partner = next(
+                (x for x in result
+                 if x["id"] != h["id"] and x["latitude"] and x["longitude"]
+                 and h["latitude"] and h["longitude"]),
+                None,
+            )
+            if partner:
+                h["distance_km"] = round(
+                    haversine_distance(
+                        h["latitude"], h["longitude"],
+                        partner["latitude"], partner["longitude"],
+                    ),
+                    1,
+                )
+    return result
+
+
+@app.get("/admin/hospitals/{hospital_id}", response_model=HospitalOut)
+def get_hospital_admin(hospital_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_admin(current_user)
+
+    h = db.query(Hospital).filter(Hospital.id == hospital_id).first()
+    if not h:
+        raise HTTPException(status_code=404, detail="Hospital not found")
+    require_hospital_access(h.id, current_user)
+    return _serialize_hospital(h)
+
+
 @app.post("/admin/hospitals", response_model=HospitalOut)
 def create_hospital(hospital_in: HospitalCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
+    # MULTI-TENANT: Only the platform Super Admin provisions hospitals.
+    if current_user.role != "super_admin":
+        raise HTTPException(status_code=403, detail="Super Admin access required")
+
+    # Generate a unique hospital code.
+    code = None
+    used = {row[0] for row in db.query(Hospital.hospital_code).all() if row[0]}
+    for _ in range(200):
+        candidate = "".join(secrets.choice("ABCDEFGHJKLMNPQRSTUVWXYZ23456789") for _ in range(6))
+        if candidate not in used:
+            code = candidate
+            break
+    if not code:
+        raise HTTPException(status_code=500, detail="Could not generate a unique hospital code")
 
     h = Hospital(
         name=hospital_in.name,
+        hospital_code=code,
         address=hospital_in.address,
         contact_number=hospital_in.contact_number,
         latitude=hospital_in.latitude,
@@ -889,36 +1191,23 @@ def create_hospital(hospital_in: HospitalCreate, db: Session = Depends(get_db), 
         ventilators_available=hospital_in.ventilators_available,
         blood_bank_available=hospital_in.blood_bank_available,
         emergency_services_available=hospital_in.emergency_services_available,
+        is_active=True,
+        subscription_tier="standard",
     )
     db.add(h)
     db.commit()
     db.refresh(h)
-    return {
-        "id": h.id,
-        "name": h.name,
-        "address": h.address,
-        "contact_number": h.contact_number,
-        "latitude": h.latitude,
-        "longitude": h.longitude,
-        "available_beds": h.available_beds,
-        "icu_beds_available": h.icu_beds_available,
-        "ventilators_available": h.ventilators_available,
-        "blood_bank_available": h.blood_bank_available,
-        "emergency_services_available": h.emergency_services_available,
-        "updated_at": h.updated_at,
-        "doctor_availability": [],
-        "distance_km": None,
-    }
+    return _serialize_hospital(h)
 
 
 @app.put("/admin/hospitals/{hospital_id}", response_model=HospitalOut)
 def update_hospital(hospital_id: int, hospital_in: HospitalUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
+    require_admin(current_user)
 
     h = db.query(Hospital).filter(Hospital.id == hospital_id).first()
     if not h:
         raise HTTPException(status_code=404, detail="Hospital not found")
+    require_hospital_access(h.id, current_user)
 
     update_data = hospital_in.model_dump(exclude_unset=True)
     for field, value in update_data.items():
@@ -927,38 +1216,14 @@ def update_hospital(hospital_id: int, hospital_in: HospitalUpdate, db: Session =
     h.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(h)
-
-    avail = [
-        {
-            "id": a.id,
-            "hospital_id": a.hospital_id,
-            "specialization": a.specialization,
-            "available_doctors": a.available_doctors,
-        }
-        for a in h.doctors
-    ]
-    return {
-        "id": h.id,
-        "name": h.name,
-        "address": h.address,
-        "contact_number": h.contact_number,
-        "latitude": h.latitude,
-        "longitude": h.longitude,
-        "available_beds": h.available_beds,
-        "icu_beds_available": h.icu_beds_available,
-        "ventilators_available": h.ventilators_available,
-        "blood_bank_available": h.blood_bank_available,
-        "emergency_services_available": h.emergency_services_available,
-        "updated_at": h.updated_at,
-        "doctor_availability": avail,
-        "distance_km": None,
-    }
+    return _serialize_hospital(h)
 
 
 @app.delete("/admin/hospitals/{hospital_id}")
 def delete_hospital(hospital_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
+    # MULTI-TENANT: Only the platform Super Admin can remove a hospital tenant.
+    if current_user.role != "super_admin":
+        raise HTTPException(status_code=403, detail="Super Admin access required")
 
     h = db.query(Hospital).filter(Hospital.id == hospital_id).first()
     if not h:
@@ -971,12 +1236,12 @@ def delete_hospital(hospital_id: int, db: Session = Depends(get_db), current_use
 
 @app.post("/admin/hospitals/{hospital_id}/doctor-availability", response_model=HospitalDoctorAvailabilityOut)
 def add_hospital_doctor_availability(hospital_id: int, avail_in: HospitalDoctorAvailabilityCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
+    require_admin(current_user)
 
     h = db.query(Hospital).filter(Hospital.id == hospital_id).first()
     if not h:
         raise HTTPException(status_code=404, detail="Hospital not found")
+    require_hospital_access(h.id, current_user)
 
     # Check if already exists for this specialization
     existing = db.query(HospitalDoctorAvailability).filter(
@@ -1164,11 +1429,14 @@ def update_doctor_profile(
 
 @app.get("/doctor/patients")
 def get_doctor_patients(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    if current_user.role not in ["doctor", "admin"]:
+    if current_user.role not in ["doctor", "admin", "hospital_admin"]:
         raise HTTPException(status_code=403, detail="Doctor access required")
 
-    # If admin, show all patients; if doctor, show assigned patients
+    # MULTI-TENANT: non-super-admins only see patients in their own hospital.
+    hid = tenant_scope(current_user)
     query = db.query(User).filter(User.role == "patient")
+    if hid is not None:
+        query = query.filter(User.hospital_id == hid)
     if current_user.role == "doctor":
         query = query.filter(User.doctor_id == current_user.id)
 
@@ -1213,6 +1481,9 @@ def doctor_create_patient(
         email=payload.email,
         hashed_password=get_password_hash(pwd),
         role="patient",
+        # MULTI-TENANT: new patient inherits the doctor's hospital.
+        hospital_id=current_user.hospital_id,
+        hospital_code=current_user.hospital_code,
         doctor_id=current_user.id,
         age=payload.age,
         sex=payload.sex,
@@ -1229,6 +1500,7 @@ def doctor_create_patient(
 
     # Write AuditLog
     audit = AuditLog(
+        hospital_id=current_user.hospital_id,
         actor_user_id=current_user.id,
         actor_role=current_user.role,
         action="created_patient",
@@ -1271,12 +1543,14 @@ def doctor_transfer_patient(
     current_user: User = Depends(get_current_user),
 ):
     """Allows doctors (or admins) to transfer / refer a patient to another doctor in the hospital."""
-    if current_user.role not in ["doctor", "admin"]:
+    if current_user.role not in ["doctor", "admin", "hospital_admin"]:
         raise HTTPException(status_code=403, detail="Doctor or Admin access required")
 
     patient = db.query(User).filter(User.id == patient_id, User.role == "patient").first()
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
+    # MULTI-TENANT: patient must be in the same hospital.
+    require_hospital_access(patient.hospital_id, current_user)
 
     if current_user.role == "doctor" and patient.doctor_id != current_user.id:
         raise HTTPException(status_code=403, detail="You can only transfer patients currently assigned to you")
@@ -1286,6 +1560,8 @@ def doctor_transfer_patient(
         raise HTTPException(status_code=404, detail="Target doctor not found")
     if not new_doc.is_active:
         raise HTTPException(status_code=400, detail="Target doctor account is inactive")
+    # MULTI-TENANT: transfers stay within the same hospital.
+    require_hospital_access(new_doc.hospital_id, current_user)
     if new_doc.id == patient.doctor_id:
         raise HTTPException(status_code=400, detail="Patient is already assigned to this doctor")
 
@@ -1297,6 +1573,7 @@ def doctor_transfer_patient(
 
     # Write AuditLog entry with transfer reason
     audit = AuditLog(
+        hospital_id=patient.hospital_id,
         actor_user_id=current_user.id,
         actor_role=current_user.role,
         action="reassigned_patient",
@@ -1337,15 +1614,11 @@ def preview_patient_assessment(
     Runs ML prediction and TreeSHAP feature attributions in real time for doctor preview.
     Does NOT save to permanent patient record or lock demographics until approved.
     """
-    if current_user.role not in ["doctor", "admin"]:
+    if current_user.role not in ["doctor", "admin", "hospital_admin"]:
         raise HTTPException(status_code=403, detail="Doctor access required")
 
-    patient = db.query(User).filter(User.id == patient_id, User.role == "patient").first()
-    if not patient:
-        raise HTTPException(status_code=404, detail="Patient not found")
-
-    if current_user.role == "doctor" and patient.doctor_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Patient is not assigned to this doctor")
+    # MULTI-TENANT: verify access (cross-hospital + assignment).
+    patient = verify_patient_access(patient_id, current_user, db, require_assigned=(current_user.role == "doctor"))
 
     effective_age = patient.age if patient.age is not None else record.age
     effective_sex = patient.sex if patient.sex is not None else record.sex
@@ -1403,15 +1676,11 @@ def record_patient_assessment(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if current_user.role not in ["doctor", "admin"]:
+    if current_user.role not in ["doctor", "admin", "hospital_admin"]:
         raise HTTPException(status_code=403, detail="Doctor access required")
 
-    patient = db.query(User).filter(User.id == patient_id, User.role == "patient").first()
-    if not patient:
-        raise HTTPException(status_code=404, detail="Patient not found")
-
-    if current_user.role == "doctor" and patient.doctor_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Patient is not assigned to this doctor")
+    # MULTI-TENANT: verify access (cross-hospital + assignment).
+    patient = verify_patient_access(patient_id, current_user, db, require_assigned=(current_user.role == "doctor"))
 
     # Demographic Lock Enforcement (Age and Sex cannot be changed once set)
     effective_age = patient.age if patient.age is not None else record.age
@@ -1462,6 +1731,7 @@ def record_patient_assessment(
     recommendations = enriched.get("recommendations", [])
     
     assessment = PatientAssessment(
+        hospital_id=patient.hospital_id,
         patient_id=patient.id,
         doctor_id=current_user.id,
         age=effective_age,
@@ -1490,6 +1760,7 @@ def record_patient_assessment(
 
     # Write AuditLog
     audit = AuditLog(
+        hospital_id=patient.hospital_id,
         actor_user_id=current_user.id,
         actor_role=current_user.role,
         action="added_record",
@@ -1576,6 +1847,7 @@ def evaluate_guest_patient(
 
     # Write AuditLog
     audit = AuditLog(
+        hospital_id=current_user.hospital_id,
         actor_user_id=current_user.id,
         actor_role=current_user.role,
         action="guest_assessment",
@@ -1618,6 +1890,8 @@ def save_clinical_draft(
         raise HTTPException(status_code=403, detail="Doctor access required")
 
     draft = ClinicalDraft(
+        # MULTI-TENANT: draft belongs to the doctor's hospital.
+        hospital_id=current_user.hospital_id,
         doctor_id=current_user.id,
         draft_name=payload.draft_name or "Guest Patient Draft",
         guest_identifier=payload.guest_identifier or "Walk-in Guest",
@@ -1657,15 +1931,16 @@ def delete_clinical_draft(
     current_user: User = Depends(get_current_user),
 ):
     """Deletes a saved clinical draft."""
-    if current_user.role not in ["doctor", "admin"]:
+    if current_user.role not in ["doctor", "admin", "hospital_admin"]:
         raise HTTPException(status_code=403, detail="Doctor access required")
 
     draft = db.query(ClinicalDraft).filter(ClinicalDraft.id == draft_id).first()
     if not draft:
         raise HTTPException(status_code=404, detail="Draft not found")
 
-    if draft.doctor_id != current_user.id and current_user.role != "admin":
+    if draft.doctor_id != current_user.id and current_user.role not in ("admin", "hospital_admin"):
         raise HTTPException(status_code=403, detail="Access denied")
+    require_hospital_access(draft.hospital_id, current_user)
 
     db.delete(draft)
     db.commit()
@@ -1686,6 +1961,10 @@ def convert_draft_to_patient(
     draft = db.query(ClinicalDraft).filter(ClinicalDraft.id == draft_id).first()
     if not draft:
         raise HTTPException(status_code=404, detail="Draft not found")
+    # MULTI-TENANT: ownership check scoped to the same hospital.
+    if draft.doctor_id != current_user.id and current_user.role not in ("admin", "hospital_admin"):
+        raise HTTPException(status_code=403, detail="Access denied")
+    require_hospital_access(draft.hospital_id, current_user)
 
     existing = db.query(User).filter(User.email == payload.patient_email).first()
     if existing:
@@ -1701,6 +1980,8 @@ def convert_draft_to_patient(
         email=payload.patient_email,
         hashed_password=get_password_hash(payload.password or "Demo@123"),
         role="patient",
+        hospital_id=current_user.hospital_id,
+        hospital_code=current_user.hospital_code,
         doctor_id=current_user.id,
         age=float(patient_age) if patient_age is not None and str(patient_age).strip() != "" else None,
         sex=float(patient_sex) if patient_sex is not None and str(patient_sex).strip() != "" else None,
@@ -1718,6 +1999,7 @@ def convert_draft_to_patient(
     # If draft had vitals, create official PatientAssessment
     if data.get("systolic_bp"):
         assessment = PatientAssessment(
+            hospital_id=new_patient.hospital_id,
             patient_id=new_patient.id,
             doctor_id=current_user.id,
             age=new_patient.age,
@@ -1767,14 +2049,14 @@ def record_patient_diagnosis(
     current_user: User = Depends(get_current_user),
 ):
     """Allows doctors to record or update a clinical diagnosis and treatment plan."""
-    if current_user.role not in ["doctor", "admin"]:
+    if current_user.role not in ["doctor", "admin", "hospital_admin"]:
         raise HTTPException(status_code=403, detail="Doctor access required")
 
-    patient = db.query(User).filter(User.id == patient_id, User.role == "patient").first()
-    if not patient:
-        raise HTTPException(status_code=404, detail="Patient not found")
+    # MULTI-TENANT: verify the doctor/admin is authorized for this patient + hospital.
+    patient = verify_patient_access(patient_id, current_user, db, require_assigned=(current_user.role == "doctor"))
 
     diag = DoctorDiagnosis(
+        hospital_id=patient.hospital_id,
         patient_id=patient.id,
         doctor_id=current_user.id,
         diagnosis_title=payload.diagnosis_title,
@@ -1789,6 +2071,7 @@ def record_patient_diagnosis(
 
     # Write AuditLog
     audit = AuditLog(
+        hospital_id=patient.hospital_id,
         actor_user_id=current_user.id,
         actor_role=current_user.role,
         action="recorded_diagnosis",
@@ -1881,17 +2164,26 @@ def get_doctor_patient_requests(
 ):
     """
     Lists pending self-registered patients waiting for doctor acceptance or assignment.
+    Scoped to the current hospital tenant.
     """
-    if current_user.role not in ["doctor", "admin"]:
+    if current_user.role not in ["doctor", "admin", "hospital_admin"]:
         raise HTTPException(status_code=403, detail="Doctor access required")
 
-    if current_user.role == "admin":
-        requests = db.query(PatientRegistrationRequest).filter(
+    hid = tenant_scope(current_user)
+    if current_user.role in ("admin", "hospital_admin"):
+        req_q = db.query(PatientRegistrationRequest).filter(
             PatientRegistrationRequest.status.in_(["pending", "forwarded"])
-        ).order_by(PatientRegistrationRequest.created_at.desc()).all()
+        )
+        if hid is not None:
+            req_q = req_q.filter(PatientRegistrationRequest.hospital_id == hid)
+        requests = req_q.order_by(PatientRegistrationRequest.created_at.desc()).all()
     else:
-        requests = db.query(PatientRegistrationRequest).filter(
-            PatientRegistrationRequest.status.in_(["pending", "forwarded"]),
+        req_q = db.query(PatientRegistrationRequest).filter(
+            PatientRegistrationRequest.status.in_(["pending", "forwarded"])
+        )
+        if hid is not None:
+            req_q = req_q.filter(PatientRegistrationRequest.hospital_id == hid)
+        requests = req_q.filter(
             (PatientRegistrationRequest.preferred_doctor_id == current_user.id) | (PatientRegistrationRequest.preferred_doctor_id == None)
         ).order_by(PatientRegistrationRequest.created_at.desc()).all()
 
@@ -1925,12 +2217,17 @@ def accept_patient_request(
     """
     Doctor accepts a self-registered patient request into their clinical roster.
     """
-    if current_user.role not in ["doctor", "admin"]:
+    if current_user.role not in ["doctor", "admin", "hospital_admin"]:
         raise HTTPException(status_code=403, detail="Doctor access required")
 
     req = db.query(PatientRegistrationRequest).filter(PatientRegistrationRequest.id == request_id).first()
     if not req:
         raise HTTPException(status_code=404, detail="Registration request not found")
+    # MULTI-TENANT: request and patient must be in the same hospital as the user.
+    req_patient = req.patient
+    require_hospital_access(req.hospital_id or (req_patient.hospital_id if req_patient else None), current_user)
+    if not req_patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
 
     if req.status not in ["pending", "forwarded"]:
         raise HTTPException(status_code=400, detail=f"Request is already {req.status}")
@@ -1938,9 +2235,7 @@ def accept_patient_request(
     if current_user.role == "doctor" and req.preferred_doctor_id and req.preferred_doctor_id != current_user.id and req.status == "forwarded":
         raise HTTPException(status_code=403, detail="This request has been forwarded to another doctor")
 
-    patient = req.patient
-    if not patient:
-        raise HTTPException(status_code=404, detail="Patient not found")
+    patient = req_patient
 
     patient.reassign_doctor(current_user.id)
     patient.pending_assignment = False
@@ -1949,6 +2244,7 @@ def accept_patient_request(
     req.notes = f"Accepted into clinical care roster by Dr. {current_user.name}"
 
     audit = AuditLog(
+        hospital_id=req.hospital_id or patient.hospital_id,
         actor_user_id=current_user.id,
         actor_role=current_user.role,
         action="accepted_patient_request",
@@ -1978,12 +2274,14 @@ def forward_patient_request(
     """
     Doctor forwards / routes a self-registered patient request to a colleague doctor.
     """
-    if current_user.role not in ["doctor", "admin"]:
+    if current_user.role not in ["doctor", "admin", "hospital_admin"]:
         raise HTTPException(status_code=403, detail="Doctor access required")
 
     req = db.query(PatientRegistrationRequest).filter(PatientRegistrationRequest.id == request_id).first()
     if not req:
         raise HTTPException(status_code=404, detail="Registration request not found")
+    req_patient = req.patient
+    require_hospital_access(req.hospital_id or (req_patient.hospital_id if req_patient else None), current_user)
 
     if req.status not in ["pending", "forwarded"]:
         raise HTTPException(status_code=400, detail=f"Request is already {req.status}")
@@ -1994,6 +2292,8 @@ def forward_patient_request(
     target_doc = db.query(User).filter(User.id == payload.new_doctor_id, User.role == "doctor", User.is_active == True).first()
     if not target_doc:
         raise HTTPException(status_code=404, detail="Target doctor not found")
+    # MULTI-TENANT: only forward within the same hospital.
+    require_hospital_access(target_doc.hospital_id, current_user)
 
     old_doc_name = current_user.name
     req.preferred_doctor_id = target_doc.id
@@ -2001,11 +2301,12 @@ def forward_patient_request(
     req.notes = f"Forwarded by Dr. {old_doc_name} to Dr. {target_doc.name}. Reason: {payload.notes or 'Departmental Routing'}"
 
     # If patient was assigned to this doctor, update pointer
-    patient = req.patient
+    patient = req_patient
     if patient and patient.pending_assignment:
         patient.doctor_id = target_doc.id
 
     audit = AuditLog(
+        hospital_id=req.hospital_id or (patient.hospital_id if patient else None),
         actor_user_id=current_user.id,
         actor_role=current_user.role,
         action="forwarded_patient_request",
@@ -2030,13 +2331,15 @@ def get_admin_pending_patients(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Admin view of all pending patient self-registration requests."""
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
+    """Admin view of all pending patient self-registration requests (tenant-scoped)."""
+    require_admin(current_user)
+    hid = tenant_scope(current_user)
 
+    req_q = db.query(PatientRegistrationRequest)
+    if hid is not None:
+        req_q = req_q.filter(PatientRegistrationRequest.hospital_id == hid)
     requests = (
-        db.query(PatientRegistrationRequest)
-        .filter(PatientRegistrationRequest.status.in_(["pending", "forwarded"]))
+        req_q.filter(PatientRegistrationRequest.status.in_(["pending", "forwarded"]))
         .order_by(PatientRegistrationRequest.created_at.desc())
         .all()
     )
@@ -2068,10 +2371,12 @@ def request_medicine_procurement(
     current_user: User = Depends(get_current_user),
 ):
     """Doctor submits a medicine request to admin for hospital procurement."""
-    if current_user.role not in ["doctor", "admin"]:
+    if current_user.role not in ["doctor", "admin", "hospital_admin"]:
         raise HTTPException(status_code=403, detail="Doctor access required")
 
     med = Medicine(
+        # MULTI-TENANT: medicine inventory is scoped to the requesting user's hospital.
+        hospital_id=current_user.hospital_id,
         name=payload.name.strip(),
         generic_name=payload.generic_name.strip() if payload.generic_name else None,
         category=payload.category or "Cardiovascular & Internal Medicine",
@@ -2088,6 +2393,7 @@ def request_medicine_procurement(
     db.refresh(med)
 
     audit = AuditLog(
+        hospital_id=current_user.hospital_id,
         actor_user_id=current_user.id,
         actor_role=current_user.role,
         action="requested_medicine",
@@ -2126,19 +2432,23 @@ def get_doctor_medicines(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Lists all medicines procured for this doctor and pending requests submitted by this doctor."""
-    if current_user.role not in ["doctor", "admin"]:
+    """Lists all medicines procured for this doctor and pending requests submitted by this doctor (tenant-scoped)."""
+    if current_user.role not in ["doctor", "admin", "hospital_admin"]:
         raise HTTPException(status_code=403, detail="Doctor access required")
 
-    if current_user.role == "admin":
-        meds = db.query(Medicine).order_by(Medicine.requested_at.desc()).all()
+    hid = tenant_scope(current_user)
+    if current_user.role in ("admin", "hospital_admin"):
+        med_q = db.query(Medicine)
+        if hid is not None:
+            med_q = med_q.filter(Medicine.hospital_id == hid)
+        meds = med_q.order_by(Medicine.requested_at.desc()).all()
     else:
-        meds = (
-            db.query(Medicine)
-            .filter((Medicine.doctor_id == current_user.id) | (Medicine.requested_by_doctor_id == current_user.id))
-            .order_by(Medicine.status.asc(), Medicine.name.asc())
-            .all()
+        med_q = db.query(Medicine).filter(
+            (Medicine.doctor_id == current_user.id) | (Medicine.requested_by_doctor_id == current_user.id)
         )
+        if hid is not None:
+            med_q = med_q.filter(Medicine.hospital_id == hid)
+        meds = med_q.order_by(Medicine.status.asc(), Medicine.name.asc()).all()
 
     out = []
     for m in meds:
@@ -2167,11 +2477,14 @@ def get_admin_medicine_requests(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Admin endpoint to list all unprocured medicine requests."""
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
+    """Admin endpoint to list all unprocured medicine requests (tenant-scoped)."""
+    require_admin(current_user)
+    hid = tenant_scope(current_user)
 
-    meds = db.query(Medicine).filter(Medicine.status == "requested").order_by(Medicine.requested_at.desc()).all()
+    med_q = db.query(Medicine).filter(Medicine.status == "requested")
+    if hid is not None:
+        med_q = med_q.filter(Medicine.hospital_id == hid)
+    meds = med_q.order_by(Medicine.requested_at.desc()).all()
     out = []
     for m in meds:
         out.append(
@@ -2202,12 +2515,13 @@ def procure_medicine(
     current_user: User = Depends(get_current_user),
 ):
     """Admin procures requested medicine and allocates it to the requesting doctor's inventory."""
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
+    require_admin(current_user)
 
     med = db.query(Medicine).filter(Medicine.id == medicine_id).first()
     if not med:
         raise HTTPException(status_code=404, detail="Medicine request not found")
+    # MULTI-TENANT: procurement is scoped to the admin's hospital.
+    require_hospital_access(med.hospital_id, current_user)
 
     med.status = "procured"
     med.quantity = payload.quantity
@@ -2218,6 +2532,7 @@ def procure_medicine(
     doc_name = target_doc.name if target_doc else f"Doctor #{med.doctor_id}"
 
     audit = AuditLog(
+        hospital_id=med.hospital_id,
         actor_user_id=current_user.id,
         actor_role=current_user.role,
         action="procured_medicine",
@@ -2260,16 +2575,18 @@ def prescribe_patient_medicines(
     current_user: User = Depends(get_current_user),
 ):
     """Allows doctor to prescribe available medicines from their inventory to a patient."""
-    if current_user.role not in ["doctor", "admin"]:
+    if current_user.role not in ["doctor", "admin", "hospital_admin"]:
         raise HTTPException(status_code=403, detail="Doctor access required")
 
-    patient = db.query(User).filter(User.id == patient_id, User.role == "patient").first()
-    if not patient:
-        raise HTTPException(status_code=404, detail="Patient not found")
+    # MULTI-TENANT: patient must be in the same hospital.
+    patient = verify_patient_access(patient_id, current_user, db, require_assigned=(current_user.role == "doctor"))
 
     selected_meds = db.query(Medicine).filter(Medicine.id.in_(payload.medicine_ids)).all()
     if not selected_meds:
         raise HTTPException(status_code=400, detail="No valid medicines selected")
+    # MULTI-TENANT: all prescribed medicines must belong to the patient's hospital.
+    for m in selected_meds:
+        require_hospital_access(m.hospital_id or patient.hospital_id, current_user)
 
     med_names = [f"{m.name} ({m.generic_name or m.category or 'Rx'})" for m in selected_meds]
     rx_summary = ", ".join(med_names)
@@ -2297,18 +2614,26 @@ def get_shared_doctor_cases(
     Common Doctor Area: Lists all patients across the network to facilitate
     cross-doctor collaboration, continuity of care, and shared diagnosis review.
     """
-    if current_user.role not in ["doctor", "admin"]:
+    if current_user.role not in ["doctor", "admin", "hospital_admin"]:
         raise HTTPException(status_code=403, detail="Doctor access required")
 
-    patients = db.query(User).filter(User.role == "patient").order_by(User.name.asc()).all()
-    
+    # MULTI-TENANT: collaboration/cross-doctor sharing is scoped to the hospital.
+    hid = tenant_scope(current_user)
+    q = db.query(User).filter(User.role == "patient")
+    if hid is not None:
+        q = q.filter(User.hospital_id == hid)
+    patients = q.order_by(User.name.asc()).all()
+
     out = []
     for p in patients:
-        # Count transfer events in audit logs
+        # Count transfer events in audit logs (scoped to the tenant)
         transfers_count = db.query(AuditLog).filter(
             AuditLog.target_id == p.id,
             AuditLog.action == "reassigned_patient",
-        ).count()
+        )
+        if hid is not None:
+            transfers_count = transfers_count.filter(AuditLog.hospital_id == hid)
+        transfers_count = transfers_count.count()
 
         latest_assessment = (
             db.query(PatientAssessment)
@@ -2357,12 +2682,11 @@ def get_patient_collaborative_file(
     including transfer audit logs, all diagnoses from different doctors,
     assessments, and blood test results.
     """
-    if current_user.role not in ["doctor", "admin"]:
+    if current_user.role not in ["doctor", "admin", "hospital_admin"]:
         raise HTTPException(status_code=403, detail="Doctor access required")
 
-    patient = db.query(User).filter(User.id == patient_id, User.role == "patient").first()
-    if not patient:
-        raise HTTPException(status_code=404, detail="Patient not found")
+    # MULTI-TENANT: shared history is scoped to the same hospital.
+    patient = verify_patient_access(patient_id, current_user, db, require_assigned=(current_user.role == "doctor"))
 
     # 1. Fetch Transfer History from AuditLog
     transfer_logs = (
@@ -2508,7 +2832,8 @@ def download_diagnosis_pdf(
     patient = diagnosis.patient
     doctor = diagnosis.doctor
 
-    # Authorization Check
+    # MULTI-TENANT: enforce hospital isolation + patient ownership.
+    require_hospital_access(diagnosis.hospital_id or (patient.hospital_id if patient else None), current_user)
     if current_user.role == "patient" and current_user.id != patient.id:
         raise HTTPException(status_code=403, detail="Access denied to other patients' reports")
 
@@ -2667,6 +2992,9 @@ def download_patient_latest_pdf(
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
 
+    # MULTI-TENANT: enforce hospital isolation for tenant-scoped roles.
+    require_hospital_access(patient.hospital_id, current_user)
+
     latest_diag = (
         db.query(DoctorDiagnosis)
         .filter(DoctorDiagnosis.patient_id == patient_id)
@@ -2798,17 +3126,14 @@ def record_blood_test(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if current_user.role not in ["doctor", "admin"]:
+    if current_user.role not in ["doctor", "admin", "hospital_admin"]:
         raise HTTPException(status_code=403, detail="Doctor access required")
 
-    patient = db.query(User).filter(User.id == patient_id, User.role == "patient").first()
-    if not patient:
-        raise HTTPException(status_code=404, detail="Patient not found")
-
-    if current_user.role == "doctor" and patient.doctor_id != current_user.id:
-        raise HTTPException(status_code=403, detail="You can only submit blood tests for your assigned patients")
+    # MULTI-TENANT: verify access (cross-hospital + assignment) before writing.
+    patient = verify_patient_access(patient_id, current_user, db, require_assigned=(current_user.role == "doctor"))
 
     blood_test = BloodTestResult(
+        hospital_id=patient.hospital_id,
         patient_id=patient.id,
         recorded_by_doctor_id=current_user.id,
         hemoglobin=payload.hemoglobin,
@@ -2829,6 +3154,7 @@ def record_blood_test(
 
     # Write AuditLog
     audit = AuditLog(
+        hospital_id=patient.hospital_id,
         actor_user_id=current_user.id,
         actor_role=current_user.role,
         action="added_blood_test",

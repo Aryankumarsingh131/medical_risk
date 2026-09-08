@@ -1,9 +1,13 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useAuth } from "./AuthContext";
 import { apiRequest, downloadPdfReport } from "./api";
+import { useToast } from "./ToastContext";
+import { SkeletonList, SkeletonTable } from "./Skeleton";
+import PasswordToggle from "./PasswordToggle";
 
 export default function DoctorDashboard() {
   const { auth } = useAuth();
+  const toast = useToast();
   const [patients, setPatients] = useState([]);
   const [allDoctors, setAllDoctors] = useState([]);
   const [selectedPatient, setSelectedPatient] = useState(null);
@@ -29,6 +33,7 @@ export default function DoctorDashboard() {
   const [msg, setMsg] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [dataLoading, setDataLoading] = useState(true);
   const [pdfLoading, setPdfLoading] = useState(false);
 
   const [hospitalDirectory, setHospitalDirectory] = useState([]);
@@ -252,12 +257,14 @@ export default function DoctorDashboard() {
   };
 
   useEffect(() => {
-    loadPatients();
-    loadAllDoctors();
-    loadSharedCases();
-    loadDrafts();
-    loadPatientRequests();
-    loadMedicines();
+    Promise.all([
+      loadPatients(),
+      loadAllDoctors(),
+      loadSharedCases(),
+      loadDrafts(),
+      loadPatientRequests(),
+      loadMedicines(),
+    ]).finally(() => setDataLoading(false));
     // Load own doctor profile
     apiRequest("/auth/me", {}, auth?.access_token).then((me) => {
       setDoctorProfile(me);
@@ -357,6 +364,7 @@ export default function DoctorDashboard() {
       );
 
       setMsg("Assessment saved as clinical draft successfully.");
+      toast.success("Assessment saved as clinical draft successfully.");
       setAssessmentStatus("approved");
       loadDrafts();
     } catch (err) {
@@ -404,6 +412,7 @@ export default function DoctorDashboard() {
     try {
       await apiRequest(`/doctor/drafts/${draftId}`, { method: "DELETE" }, auth?.access_token);
       setMsg("Draft deleted.");
+      toast.success("Draft deleted.");
       loadDrafts();
     } catch (err) {
       setError(err.message);
@@ -428,6 +437,7 @@ export default function DoctorDashboard() {
       );
 
       setMsg(res.message || "Draft converted to registered patient successfully.");
+      toast.success(res.message || "Draft converted to registered patient successfully.");
       setShowConvertModal(false);
       setConvertDraftTarget(null);
       setConvertForm({
@@ -472,6 +482,7 @@ export default function DoctorDashboard() {
       );
 
       setMsg(`Patient ${created.name} registered and assigned to you.`);
+      toast.success(`Patient "${created.name}" registered and assigned to you.`);
       setShowAddPatientModal(false);
       setNewPatientForm({
         name: "",
@@ -517,6 +528,7 @@ export default function DoctorDashboard() {
       );
 
       setMsg(res.message || `Patient ${selectedPatient.name} transferred successfully.`);
+      toast.success(res.message || `Patient "${selectedPatient.name}" transferred successfully.`);
       setShowTransferModal(false);
       setTransferReason("");
       setTransferTargetDocId("");
@@ -541,6 +553,7 @@ export default function DoctorDashboard() {
         auth?.access_token
       );
       setMsg(res.message || "Patient request accepted into your roster.");
+      toast.success(res.message || "Patient request accepted into your roster.");
       loadPatientRequests();
       await loadPatients(res.patient_id);
     } catch (err) {
@@ -579,6 +592,7 @@ export default function DoctorDashboard() {
         auth?.access_token
       );
       setMsg(res.message || "Patient request forwarded to doctor.");
+      toast.success(res.message || "Patient request forwarded to doctor.");
       setShowForwardModal(false);
       setForwardTargetReq(null);
       loadPatientRequests();
@@ -604,6 +618,7 @@ export default function DoctorDashboard() {
         auth?.access_token
       );
       setMsg(`Procurement request submitted for ${res.name} (${res.quantity} ${res.unit}).`);
+      toast.success(`Procurement request submitted for "${res.name}".`);
       setShowMedRequestModal(false);
       setMedRequestForm({
         name: "",
@@ -633,6 +648,7 @@ export default function DoctorDashboard() {
       : medTextList.join(", ");
     setDiagnosisForm((prev) => ({ ...prev, prescriptions: newRx }));
     setMsg("Selected medicines added to prescription notes.");
+    toast.success("Selected medicines added to prescription notes.");
     setActiveTab("diagnosis");
   };
 
@@ -654,6 +670,7 @@ export default function DoctorDashboard() {
       );
 
       setMsg("Clinical diagnosis and treatment plan recorded.");
+      toast.success("Clinical diagnosis and treatment plan recorded.");
       setDiagnosisForm({
         diagnosis_title: "",
         clinical_notes: "",
@@ -756,6 +773,7 @@ export default function DoctorDashboard() {
       }
     } catch (err) {
       setError(err.message || "Failed to process clinical assessment.");
+      toast.error(err.message || "Failed to process clinical assessment.");
     } finally {
       setLoading(false);
     }
@@ -793,6 +811,7 @@ export default function DoctorDashboard() {
       setAssessmentResult(res);
       setAssessmentStatus("approved");
       setMsg(`Assessment approved by physician and permanently saved to patient record.`);
+      toast.success(`Assessment approved and saved to patient record.`);
       await loadPatients(selectedPatient.id);
       loadSharedCases();
     } catch (err) {
@@ -842,6 +861,7 @@ export default function DoctorDashboard() {
       );
 
       setMsg("Blood test panel recorded.");
+      toast.success("Blood test panel recorded.");
       setBloodTestForm({
         hemoglobin: "",
         wbc_count: "",
@@ -929,9 +949,23 @@ export default function DoctorDashboard() {
       {msg && <div className="alert alert-success">{msg}</div>}
       {error && <div className="alert alert-error">{error}</div>}
 
+      {dataLoading ? (
+        <>
+          <SkeletonTable rows={1} cols={6} />
+          <div style={{ display: "grid", gridTemplateColumns: "220px 1fr", gap: 16, marginTop: 16 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <div className="skeleton" style={{ height: 44 }} />
+              <div className="skeleton" style={{ height: 44 }} />
+              <SkeletonList items={4} />
+            </div>
+            <SkeletonTable rows={6} cols={5} />
+          </div>
+        </>
+      ) : (
+      <>
       {/* Main Mode Navigation */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 8 }}>
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+      <div className="nav-buttons-row" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 8 }}>
+        <div className="nav-buttons-row" style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           <button
             type="button"
             className={mainView === "my_patients" && !isGuestMode ? "" : "btn-secondary"}
@@ -2314,8 +2348,10 @@ export default function DoctorDashboard() {
                   const updated = await apiRequest("/doctor/profile", { method: "PUT", body: JSON.stringify(payload) }, auth?.access_token);
                   setDoctorProfile(updated);
                   setProfileSaveMsg("Profile updated successfully.");
+                  toast.success("Profile updated successfully.");
                 } catch (err) {
                   setError(err.message);
+                  toast.error(err.message);
                 }
               }}
             >
@@ -2565,11 +2601,11 @@ export default function DoctorDashboard() {
               </div>
 
               <div className="form-group">
-                <label>Password</label>
-                <input
-                  type="password"
+                <label>Password *</label>
+                <PasswordToggle
                   value={convertForm.password}
                   onChange={(e) => setConvertForm({ ...convertForm, password: e.target.value })}
+                  placeholder="Set a password"
                   required
                 />
               </div>
@@ -2675,6 +2711,8 @@ export default function DoctorDashboard() {
             </form>
           </div>
         </div>
+      )}
+      </>
       )}
     </div>
   );

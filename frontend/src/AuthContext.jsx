@@ -9,10 +9,12 @@ export function AuthProvider({ children }) {
     return saved ? JSON.parse(saved) : null;
   });
 
-  const login = async (email, password) => {
+  const login = async (email, password, hospitalCode) => {
+    const body = { email, password };
+    if (hospitalCode) body.hospital_code = hospitalCode;
     const data = await apiRequest("/auth/login", {
       method: "POST",
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify(body),
     });
     setAuth(data);
     localStorage.setItem("medrisk_auth", JSON.stringify(data));

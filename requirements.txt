@@ -10,4 +10,5 @@ python-jose[cryptography]
 passlib[bcrypt]
 joblib
 python-dotenv
+psycopg2-binary
 reportlab
