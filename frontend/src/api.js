@@ -1,7 +1,7 @@
 // During local development Vite proxies /api to FastAPI. This avoids a
 // browser-to-database shortcut and guarantees all UI data goes through the
 // authenticated backend; deployments can set VITE_API_URL explicitly.
-const API_BASE = import.meta.env.VITE_API_URL || "/api";
+const API_BASE = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? "/api" : "https://three143tradtc.onrender.com");
 
 // Friendly error messages for common HTTP status codes — no raw stack traces
 // shown to users. Technical detail stays in the console for debugging.
@@ -37,7 +37,8 @@ export async function apiRequest(endpoint, options = {}, token = null) {
   }
 
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), 15000);
+  // 60-second timeout to accommodate Render free-tier cold starts
+  const timeout = window.setTimeout(() => controller.abort(), 60000);
   let response;
   try {
     response = await fetch(`${API_BASE}${endpoint}`, {
