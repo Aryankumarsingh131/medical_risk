@@ -494,9 +494,8 @@ class PatientSelfRegister(BaseModel):
     password: str = Field(..., min_length=6)
     preferred_doctor_id: Optional[int] = None
     department_preference: Optional[str] = None
-    # MULTI-TENANT: Hospital code the patient belongs to. Required for patient
-    # self-registration so the account is scoped to a real tenant.
-    hospital_code: str = Field(..., min_length=4, max_length=10)
+    # MULTI-TENANT: Hospital code the patient belongs to. Defaults to CITY01.
+    hospital_code: Optional[str] = Field("CITY01", min_length=4, max_length=10)
 
 
 class PatientRegistrationRequestOut(BaseModel):

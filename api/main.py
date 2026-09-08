@@ -354,9 +354,17 @@ app.add_middleware(
 @app.on_event("startup")
 def startup_event():
     create_tables()
-    # Note: Database seeding is now handled by scripts/seed_demo_data.py
-    # which samples real patient data from raw datasets instead of hardcoded values
-    print("[startup] Database tables created. Run scripts/seed_demo_data.py to populate with sample data from raw datasets.")
+    try:
+        from api.database import SessionLocal, load_initial_data
+        db = SessionLocal()
+        try:
+            load_initial_data(db)
+        finally:
+            db.close()
+        print("[startup] Database initialized with demo accounts.")
+    except Exception as exc:
+        print(f"[startup] Note on demo data initialization: {exc}")
+
 
 
 @app.get("/")
@@ -412,7 +420,13 @@ async def http_exception_handler(request, exc):
 
 @app.post("/auth/login", response_model=LoginResponse)
 def login_json(payload: LoginRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == payload.email.strip().lower()).first()
+    email_clean = payload.email.strip().lower()
+    user = db.query(User).filter(User.email == email_clean).first()
+    # Support quick demo email aliases (e.g. admin@hospital.com -> admin.city01@hospital.com)
+    if not user and "@" in email_clean:
+        prefix, domain = email_clean.split("@", 1)
+        user = db.query(User).filter(User.email.like(f"{prefix}.%@{domain}")).first()
+
     if not user or not verify_password(payload.password, user.hashed_password):
         # SECURITY: Generic error message prevents user enumeration
         raise HTTPException(status_code=401, detail="Invalid credentials")

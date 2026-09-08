@@ -136,12 +136,36 @@ export async function apiRequest(endpoint, options = {}, token = null) {
   const body = options.body ? JSON.parse(options.body) : {};
   const auth = getStoredAuth();
 
+  // Try backend first if configured or in local development (proxied by Vite)
+  const backendBase = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? "/api" : null);
+  if (backendBase) {
+    try {
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 3500);
+      const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+
+      const res = await fetch(`${backendBase}${endpoint}`, {
+        ...options,
+        headers,
+        signal: controller.signal,
+      });
+      window.clearTimeout(timeout);
+      if (res.ok) {
+        return await res.json();
+      }
+    } catch {
+      // Backend offline or unreachable: seamlessly fall back to direct Supabase client below
+    }
+  }
+
   // Normalize path without query string for routing
   const [path, queryString] = endpoint.split("?");
   const queryParams = new URLSearchParams(queryString || "");
 
   try {
     // ── 1. Auth endpoints ──────────────────────────────────────────────────
+
     if (path === "/auth/login" && method === "POST") {
       const email = (body.email || "").trim().toLowerCase();
       const hospitalCode = (body.hospital_code || "").trim().toUpperCase();

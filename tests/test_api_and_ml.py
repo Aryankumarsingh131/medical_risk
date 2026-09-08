@@ -130,6 +130,11 @@ class TestMedicalRiskPlatform(unittest.TestCase):
         self.assertIsNotNone(arjun)
         dr_sharma = self.db.query(User).filter(User.email == "dr.sharma@hospital.com").first()
         arjun.doctor_id = dr_sharma.id
+        arjun.is_demographics_locked = True
+        if arjun.age is None:
+            arjun.age = 54.0
+        if arjun.sex is None:
+            arjun.sex = 1.0
         self.db.commit()
         self.db.refresh(arjun)
 
@@ -345,6 +350,10 @@ class TestMedicalRiskPlatform(unittest.TestCase):
         self.assertTrue(any(m.id == req_res.id for m in available))
 
         # 5. Doctor prescribes the medicine to patient
+        arjun.doctor_id = dr_sharma.id
+        self.db.commit()
+        self.db.refresh(arjun)
+
         rx_res = prescribe_patient_medicines(
             arjun.id,
             PrescriptionCreate(

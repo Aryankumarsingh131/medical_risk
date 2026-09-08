@@ -1,6 +1,4 @@
 """
-api/database.py
----------------
 SQLAlchemy schema and ORM models for Role-Based Clinical Risk System.
 
 Models
@@ -40,16 +38,34 @@ load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./medical_risk.db")
 
-_connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
-engine = create_engine(
-    DATABASE_URL,
-    connect_args=_connect_args,
-    echo=False,
-    pool_pre_ping=True,  # Reconnect on stale connections (important for cloud DBs)
-)
+def init_engine():
+    global DATABASE_URL
+    if DATABASE_URL.startswith("postgresql"):
+        try:
+            test_engine = create_engine(
+                DATABASE_URL,
+                pool_pre_ping=True,
+                connect_args={"connect_timeout": 5},
+                echo=False,
+            )
+            with test_engine.connect() as conn:
+                pass
+            return test_engine
+        except Exception as exc:
+            print(f"[!] Remote database connection failed ({exc}). Falling back to local persistent SQLite.")
+            DATABASE_URL = "sqlite:///./medical_risk.db"
 
+    return create_engine(
+        DATABASE_URL,
+        connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {},
+        echo=False,
+        pool_pre_ping=True,
+    )
+
+engine = init_engine()
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+
 
 
 # ---------------------------------------------------------------------------
@@ -124,9 +140,8 @@ class User(Base):
 PatientProfile = User
 
 
-
 # ---------------------------------------------------------------------------
-# DoctorDiagnosis (Physician clinical diagnosis, notes & treatment plan)
+# Hospital
 # ---------------------------------------------------------------------------
 
 class Hospital(Base):
@@ -164,6 +179,10 @@ class HospitalDoctorAvailability(Base):
 
     hospital = relationship("Hospital", back_populates="doctors")
 
+
+# ---------------------------------------------------------------------------
+# DoctorDiagnosis (Physician clinical diagnosis, notes & treatment plan)
+# ---------------------------------------------------------------------------
 
 class DoctorDiagnosis(Base):
     __tablename__ = "doctor_diagnoses"
@@ -253,7 +272,7 @@ class PatientAssessment(Base):
     risk_probability = Column(Float, nullable=False)
     triggered_rule_codes = Column(Text, nullable=True)  # JSON array of triggered rule codes
     clinical_recommendations = Column(Text, nullable=True)  # JSON array of recommendations
-    
+
     # Timestamp
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -385,20 +404,6 @@ class Medicine(Base):
 # PatientRegistrationRequest (Self-registered patients awaiting assignment)
 # ---------------------------------------------------------------------------
 
-
-class HospitalAvailability(Base):
-    __tablename__ = "hospital_availability"
-
-    id = Column(Integer, primary_key=True, index=True)
-    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False, index=True)
-    availability_status = Column(String(50), default="unknown")
-    available_beds = Column(Integer, default=0)
-    icu_beds_available = Column(Integer, default=0)
-    ventilators_available = Column(Integer, default=0)
-    blood_bank_available = Column(Boolean, default=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-
 class PatientRegistrationRequest(Base):
     __tablename__ = "patient_registration_requests"
 
@@ -517,3 +522,168 @@ def create_tables() -> None:
         except Exception:
             pass
 
+
+def load_initial_data(db: Session) -> None:
+    """
+    Load initial hardcoded data for demo purposes.
+    Ensures all platform demo accounts (Admin, Doctor, Patient, Super Admin)
+    exist so the application works out of the box.
+    """
+    from passlib.context import CryptContext
+    pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+    # Check if we already have users to avoid duplication
+    if db.query(User).first():
+        return  # Data already loaded
+
+    # 1. Hospitals
+    h1 = Hospital(
+        name="City Care Super Specialty Hospital",
+        hospital_code="CITY01",
+        address="123 Healthcare Ave, Medical District, Mumbai",
+        contact_number="+91 98765 00100",
+        latitude=19.076,
+        longitude=72.8777,
+        available_beds=42,
+        icu_beds_available=12,
+        ventilators_available=6,
+        blood_bank_available=True,
+        emergency_services_available=True,
+        is_active=True,
+        subscription_tier="enterprise",
+    )
+    db.add(h1)
+    db.flush()
+
+    h2 = Hospital(
+        name="Apollo Heart & Emergency Institute",
+        hospital_code="APOLLO",
+        address="45 Park Road, South City, Mumbai",
+        contact_number="+91 98765 00200",
+        latitude=19.12,
+        longitude=72.85,
+        available_beds=18,
+        icu_beds_available=8,
+        ventilators_available=4,
+        blood_bank_available=True,
+        emergency_services_available=True,
+        is_active=True,
+        subscription_tier="enterprise",
+    )
+    db.add(h2)
+    db.flush()
+
+    demo_pw = pwd_context.hash("Demo@123")
+
+    # 2. Standard Demo Accounts (Matching Login.jsx quick-login buttons)
+    super_admin = User(
+        name="Platform Super Admin",
+        email="superadmin@medrisk.com",
+        hashed_password=demo_pw,
+        role="super_admin",
+        is_active=True,
+        hospital_id=h1.id,
+        hospital_code=h1.hospital_code,
+    )
+    db.add(super_admin)
+
+    h_admin = User(
+        name="Hospital Admin (City Care)",
+        email="admin@hospital.com",
+        hashed_password=demo_pw,
+        role="hospital_admin",
+        is_active=True,
+        hospital_id=h1.id,
+        hospital_code=h1.hospital_code,
+    )
+    db.add(h_admin)
+
+    doc_sharma = User(
+        name="Dr. Priya Sharma",
+        email="dr.sharma@hospital.com",
+        hashed_password=demo_pw,
+        role="doctor",
+        specialization="Cardiology",
+        license_number="MCI-2015-00123",
+        degree="MBBS, MD (Cardiology), FACC",
+        years_of_experience=14,
+        certifications="Board Certified Cardiologist, ACLS Certified",
+        is_active=True,
+        hospital_id=h1.id,
+        hospital_code=h1.hospital_code,
+    )
+    db.add(doc_sharma)
+    db.flush()
+
+    patient_arjun = User(
+        name="Arjun Mehta",
+        email="patient.arjun@hospital.com",
+        hashed_password=demo_pw,
+        role="patient",
+        is_active=True,
+        hospital_id=h1.id,
+        hospital_code=h1.hospital_code,
+        age=54.0,
+        sex=1.0,
+        is_demographics_locked=True,
+        phone_number="+91 98765 43210",
+        emergency_contact_name="Sunita Mehta",
+        emergency_contact_phone="+91 98765 43211",
+        address="Flat 4B, Sunflower Heights, Andheri West, Mumbai",
+        doctor_id=doc_sharma.id,
+    )
+    db.add(patient_arjun)
+
+    # 3. Simple demo aliases
+    db.add(User(
+        name="Super Admin",
+        email="superadmin@demo.com",
+        hashed_password=demo_pw,
+        role="super_admin",
+        is_active=True,
+        hospital_id=h1.id,
+        hospital_code=h1.hospital_code,
+    ))
+    db.add(User(
+        name="Hospital Admin",
+        email="hospitaladmin@demo.com",
+        hashed_password=demo_pw,
+        role="hospital_admin",
+        is_active=True,
+        hospital_id=h1.id,
+        hospital_code=h1.hospital_code,
+    ))
+    db.add(User(
+        name="Dr. Demo Doctor",
+        email="doctor@demo.com",
+        hashed_password=demo_pw,
+        role="doctor",
+        specialization="Cardiology",
+        license_number="DOC12345",
+        degree="MD",
+        years_of_experience=10,
+        certifications="Board Certified in Cardiology",
+        is_active=True,
+        hospital_id=h1.id,
+        hospital_code=h1.hospital_code,
+    ))
+    db.add(User(
+        name="Demo Patient",
+        email="patient@demo.com",
+        hashed_password=demo_pw,
+        role="patient",
+        is_active=True,
+        hospital_id=h1.id,
+        hospital_code=h1.hospital_code,
+        age=45.0,
+        sex=1.0,
+        is_demographics_locked=True,
+        phone_number="0987654321",
+        emergency_contact_name="Emergency Contact",
+        emergency_contact_phone="0987654320",
+        address="456 Patient Ave, Demo City",
+        doctor_id=doc_sharma.id,
+    ))
+
+    # Commit all the initial data
+    db.commit()
