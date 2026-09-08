@@ -335,18 +335,24 @@ app = FastAPI(title="Medical Risk XAI Backend", version="1.0.0")
 # SECURITY: Add security headers middleware
 app.add_middleware(SecurityHeadersMiddleware)
 
-# CORS configuration - restrictive for production
+# CORS configuration - supports local dev, Vercel deployments, and custom domains
+cors_origins_env = os.getenv("CORS_ORIGINS", "")
+allowed_origins = [
+    "http://localhost:5173",  # Vite dev server
+    "http://127.0.0.1:5173",
+]
+if cors_origins_env:
+    allowed_origins.extend([o.strip() for o in cors_origins_env.split(",") if o.strip()])
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",  # Vite dev server
-        "http://127.0.0.1:5173",
-        # Add your production domain here
-    ],
+    allow_origins=allowed_origins,
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
+
 
 
 @app.on_event("startup")
