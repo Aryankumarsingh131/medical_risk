@@ -1,38 +1,80 @@
 # Git ignore rules for medical-risk-xai
 
-# Python
+# ── Auto-generated root docs (not part of codebase) ─────────────────────────
+COMPLETE_SUMMARY.md
+DATABASE_PERSISTENCE_UPDATE.md
+IMPLEMENTATION_SUMMARY.md
+SECURITY_AUDIT_COMPLETE.md
+SECURITY_AUDIT_FINAL_CHECKLIST.md
+SECURITY_AUDIT_REPORT.md
+SECURITY_AUDIT_SUMMARY.md
+SECURITY_PATCHES.py
+
+# ── Python ────────────────────────────────────────────────────────────────────
 .venv/
 __pycache__/
 *.py[cod]
+*.pyo
 *.egg-info/
 dist/
 build/
 .eggs/
 
-# Environment
+# ── Environment / secrets ────────────────────────────────────────────────────
 .env
 
-# Data (keep structure, ignore content)
+# ── Databases ─────────────────────────────────────────────────────────────────
+*.db
+*.db-shm
+*.db-wal
+*.db.bak*
+
+# ── ML Data (all raw & processed datasets) ───────────────────────────────────
 data/raw/*.csv
+data/raw/*.txt
+data/raw/*.tsv
+data/raw/*.json
+data/raw/*.parquet
 data/processed/*.csv
+data/processed/*.tsv
 data/processed/*.parquet
 data/processed/*.npy
+data/processed/*.npz
 data/processed/*.joblib
+data/processed/*.pkl
+data/processed/*.pickle
 
-# Jupyter
+# ── ML Model artifacts ────────────────────────────────────────────────────────
+models/*.joblib
+models/*.pkl
+models/*.pickle
+models/*.h5
+models/*.pt
+models/*.pth
+models/*.onnx
+models/*.bin
+models/shap_summary*.png
+models/*.json
+
+# ── Reports (auto-generated) ──────────────────────────────────────────────────
+reports/
+
+# ── Supabase local temp files ────────────────────────────────────────────────
+supabase/.temp/
+
+# ── Jupyter ───────────────────────────────────────────────────────────────────
 .ipynb_checkpoints/
 
-# Node
+# ── Node / Frontend build ────────────────────────────────────────────────────
 frontend/node_modules/
 frontend/dist/
 
-# IDE
+# ── IDE ───────────────────────────────────────────────────────────────────────
 .vscode/
 .idea/
+.claude/
 
-# OS & IDE & Databases
+# ── OS ────────────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
-.claude/
-*.db
 
