@@ -1,0 +1,17 @@
+# Vercel Ignore Rules
+# Exclude Python backend and ML dependencies from Vercel deployment
+# (ML libraries like XGBoost, SHAP, and Scikit-learn exceed Vercel's 500 MB serverless function limit)
+
+api/
+src/
+models/
+data/
+scripts/
+tests/
+requirements.txt
+run_all.py
+*.db
+*.db-shm
+*.db-wal
+.env
+.env.*
