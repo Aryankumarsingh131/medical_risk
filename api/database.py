@@ -97,6 +97,7 @@ class User(Base):
     # Patient-specific demographics & contact
     # doctor_id is the assigned doctor FK; use reassign_doctor() / transfer_doctor() for transfers.
     doctor_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    date_of_birth = Column(String(20), nullable=True)
     age = Column(Float, nullable=True)
     sex = Column(Float, nullable=True)             # 1 = Male, 0 = Female
     is_demographics_locked = Column(Boolean, default=False)
@@ -492,6 +493,8 @@ def create_tables() -> None:
             # Check users table columns
             result = conn.execute(text("PRAGMA table_info(users)"))
             cols = [row[1] for row in result.fetchall()]
+            if "date_of_birth" not in cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN date_of_birth VARCHAR(20)"))
             if "pending_assignment" not in cols:
                 conn.execute(text("ALTER TABLE users ADD COLUMN pending_assignment BOOLEAN DEFAULT 0"))
             if "hospital_id" not in cols:

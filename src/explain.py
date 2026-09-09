@@ -82,6 +82,13 @@ def categorize_impact(shap_val: float, max_abs_shap: float) -> str:
     abs_val = abs(shap_val)
     if max_abs_shap <= 1e-6:
         return "low impact"
+    ratio = abs_val / max_abs_shap
+    if ratio >= 0.50:
+        return "high impact"
+    elif ratio >= 0.20:
+        return "moderate impact"
+    else:
+        return "low impact"
 
 
 def _run_ml_observability(patient_dict: Dict[str, Any]) -> None:
@@ -99,13 +106,6 @@ def _run_ml_observability(patient_dict: Dict[str, Any]) -> None:
     except Exception:
         # ML observability must never affect the deterministic clinical result.
         pass
-    ratio = abs_val / max_abs_shap
-    if ratio >= 0.50:
-        return "high impact"
-    elif ratio >= 0.20:
-        return "moderate impact"
-    else:
-        return "low impact"
 
 
 def explain_prediction(

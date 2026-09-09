@@ -215,6 +215,7 @@ class DoctorPatientCreate(BaseModel):
     name: str = Field(..., min_length=2, max_length=100)
     email: str
     password: Optional[str] = "Demo@123"
+    date_of_birth: Optional[str] = None
     age: Optional[float] = None
     sex: Optional[float] = None
     phone_number: Optional[str] = None
@@ -492,10 +493,31 @@ class PatientSelfRegister(BaseModel):
     name: str = Field(..., min_length=2, max_length=100)
     email: str
     password: str = Field(..., min_length=6)
+    date_of_birth: Optional[str] = None
+    age: Optional[float] = None
+    sex: Optional[float] = None
+    phone_number: Optional[str] = None
+    emergency_contact_name: Optional[str] = None
+    emergency_contact_phone: Optional[str] = None
+    address: Optional[str] = None
     preferred_doctor_id: Optional[int] = None
     department_preference: Optional[str] = None
     # MULTI-TENANT: Hospital code the patient belongs to. Defaults to CITY01.
     hospital_code: Optional[str] = Field("CITY01", min_length=4, max_length=10)
+
+    # Optional initial clinical baseline fields for immediate ML prediction upon registration
+    systolic_bp: Optional[int] = Field(None, ge=50, le=300)
+    diastolic_bp: Optional[int] = Field(None, ge=30, le=200)
+    cholesterol: Optional[float] = Field(None, ge=0, le=800)
+    fasting_blood_sugar: Optional[float] = Field(None)
+    max_heart_rate: Optional[float] = Field(None, ge=30, le=260)
+    bmi: Optional[float] = Field(None, ge=10.0, le=90.0)
+    smoking: Optional[float] = Field(None)
+    chest_pain_type: Optional[float] = Field(None)
+    exercise_angina: Optional[float] = Field(None)
+    st_depression: Optional[float] = Field(None)
+    hypertension: Optional[float] = Field(None)
+    diabetes: Optional[float] = Field(None)
 
 
 class PatientRegistrationRequestOut(BaseModel):

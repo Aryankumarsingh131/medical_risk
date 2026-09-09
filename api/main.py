@@ -10,7 +10,7 @@ import json
 import os
 import secrets
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -91,6 +91,22 @@ from src.geometry import haversine_distance
 from api.security import SecurityHeadersMiddleware
 
 load_dotenv()
+
+def calculate_age_from_dob(dob_str: Optional[str]) -> Optional[float]:
+    """Calculate integer age in years from ISO date of birth string (YYYY-MM-DD)."""
+    if not dob_str:
+        return None
+    try:
+        parts = str(dob_str).strip().split("T")[0].split("-")
+        if len(parts) != 3:
+            return None
+        year, month, day = int(parts[0]), int(parts[1]), int(parts[2])
+        dob_date = date(year, month, day)
+        today = date.today()
+        calculated_age = today.year - dob_date.year - ((today.month, today.day) < (dob_date.month, dob_date.day))
+        return float(max(calculated_age, 0))
+    except Exception:
+        return None
 
 SECRET_KEY = os.getenv("SECRET_KEY", "medical_risk_jwt_fallback_secret_key_2026_super_safe")
 
@@ -480,6 +496,11 @@ def self_register_patient(payload: PatientSelfRegister, db: Session = Depends(ge
             User.hospital_id == hospital.id,
         ).first()
 
+    # Calculate age from date of birth if DOB provided or payload.age
+    calculated_age = calculate_age_from_dob(payload.date_of_birth)
+    effective_age = calculated_age if calculated_age is not None else (payload.age if payload.age is not None else 30.0)
+    effective_sex = payload.sex if payload.sex is not None else 1.0
+
     patient = User(
         name=payload.name.strip(),
         email=email_clean,
@@ -488,12 +509,72 @@ def self_register_patient(payload: PatientSelfRegister, db: Session = Depends(ge
         hospital_id=hospital.id,
         hospital_code=hospital.hospital_code,
         doctor_id=doc.id if doc else None,
+        date_of_birth=payload.date_of_birth,
+        age=effective_age,
+        sex=effective_sex,
+        phone_number=payload.phone_number,
+        emergency_contact_name=payload.emergency_contact_name,
+        emergency_contact_phone=payload.emergency_contact_phone,
+        address=payload.address,
+        is_demographics_locked=bool(payload.date_of_birth is not None or payload.age is not None or payload.sex is not None),
         pending_assignment=True if not doc else False,
         is_active=True,
     )
     db.add(patient)
     db.commit()
     db.refresh(patient)
+
+    # Automatically generate initial baseline ML risk prediction for the newly registered patient
+    try:
+        patient_feature_dict = {
+            "age": effective_age,
+            "sex": effective_sex,
+            "resting_bp": payload.systolic_bp or 120,
+            "systolic_bp": payload.systolic_bp or 120,
+            "diastolic_bp": payload.diastolic_bp or 80,
+            "cholesterol": payload.cholesterol if payload.cholesterol is not None else 200.0,
+            "fasting_blood_sugar": payload.fasting_blood_sugar if payload.fasting_blood_sugar is not None else 0.0,
+            "max_heart_rate": payload.max_heart_rate if payload.max_heart_rate is not None else 150.0,
+            "bmi": payload.bmi if payload.bmi is not None else 24.5,
+            "smoking": payload.smoking if payload.smoking is not None else 0.0,
+            "chest_pain_type": payload.chest_pain_type if payload.chest_pain_type is not None else 0.0,
+            "exercise_angina": payload.exercise_angina if payload.exercise_angina is not None else 0.0,
+            "st_depression": payload.st_depression if payload.st_depression is not None else 0.0,
+            "hypertension": payload.hypertension if payload.hypertension is not None else 0.0,
+            "diabetes": payload.diabetes if payload.diabetes is not None else 0.0,
+        }
+
+        explanation = explain_prediction(patient_feature_dict)
+        enriched = enrich_explanation(explanation, patient_feature_dict)
+        triggered_codes = [r.get("rule_code") for r in enriched.get("triggered_rules", [])]
+        recommendations = enriched.get("recommendations", [])
+
+        initial_assessment = PatientAssessment(
+            hospital_id=hospital.id,
+            patient_id=patient.id,
+            doctor_id=doc.id if doc else None,
+            age=effective_age,
+            sex=effective_sex,
+            systolic_bp=patient_feature_dict["systolic_bp"],
+            diastolic_bp=patient_feature_dict["diastolic_bp"],
+            cholesterol=patient_feature_dict["cholesterol"],
+            fasting_blood_sugar=patient_feature_dict["fasting_blood_sugar"],
+            max_heart_rate=patient_feature_dict["max_heart_rate"],
+            bmi=patient_feature_dict["bmi"],
+            smoking=patient_feature_dict["smoking"],
+            chest_pain_type=patient_feature_dict["chest_pain_type"],
+            exercise_angina=patient_feature_dict["exercise_angina"],
+            st_depression=patient_feature_dict["st_depression"],
+            hypertension=patient_feature_dict["hypertension"],
+            diabetes=patient_feature_dict["diabetes"],
+            risk_level=str(enriched["risk_category"]["label"]),
+            risk_probability=float(enriched["risk_score"]),
+            triggered_rule_codes=", ".join(triggered_codes) if triggered_codes else "BASELINE_REGISTRATION_PROFILE",
+            clinical_recommendations="\n".join(recommendations) if recommendations else "Maintain healthy lifestyle and schedule regular checkups.",
+        )
+        db.add(initial_assessment)
+    except Exception:
+        pass
 
     # Create PatientRegistrationRequest for doctor review queue
     req = PatientRegistrationRequest(
@@ -519,6 +600,8 @@ def self_register_patient(payload: PatientSelfRegister, db: Session = Depends(ge
             "patient_name": patient.name,
             "preferred_doctor_id": doc.id if doc else None,
             "department": payload.department_preference,
+            "date_of_birth": payload.date_of_birth,
+            "age": effective_age,
         }),
     )
     db.add(audit)
@@ -539,6 +622,33 @@ def self_register_patient(payload: PatientSelfRegister, db: Session = Depends(ge
         hospital_id=patient.hospital_id,
         hospital_code=patient.hospital_code,
     )
+
+
+@app.get("/auth/me")
+def get_current_user_profile(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return profile details of the currently authenticated user."""
+    doc = current_user.doctor
+    return {
+        "id": current_user.id,
+        "name": current_user.name,
+        "email": current_user.email,
+        "role": current_user.role,
+        "hospital_id": current_user.hospital_id,
+        "hospital_code": current_user.hospital_code,
+        "doctor_id": current_user.doctor_id,
+        "assigned_doctor": doc.name if doc else None,
+        "date_of_birth": current_user.date_of_birth,
+        "age": current_user.age,
+        "sex": current_user.sex,
+        "phone_number": current_user.phone_number,
+        "emergency_contact_name": current_user.emergency_contact_name,
+        "emergency_contact_phone": current_user.emergency_contact_phone,
+        "address": current_user.address,
+        "is_demographics_locked": current_user.is_demographics_locked,
+    }
 
 
 @app.post("/auth/hospital-register", response_model=HospitalOut)
@@ -1501,6 +1611,9 @@ def doctor_create_patient(
     if existing:
         raise HTTPException(status_code=400, detail="A user with this email already exists")
 
+    calculated_age = calculate_age_from_dob(payload.date_of_birth)
+    effective_age = payload.age if payload.age is not None else calculated_age
+
     pwd = payload.password or "Demo@123"
     patient = User(
         name=payload.name,
@@ -1511,9 +1624,10 @@ def doctor_create_patient(
         hospital_id=current_user.hospital_id,
         hospital_code=current_user.hospital_code,
         doctor_id=current_user.id,
-        age=payload.age,
+        date_of_birth=payload.date_of_birth,
+        age=effective_age,
         sex=payload.sex,
-        is_demographics_locked=bool(payload.age is not None or payload.sex is not None),
+        is_demographics_locked=bool(payload.date_of_birth is not None or effective_age is not None or payload.sex is not None),
         phone_number=payload.phone_number,
         emergency_contact_name=payload.emergency_contact_name,
         emergency_contact_phone=payload.emergency_contact_phone,

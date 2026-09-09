@@ -94,6 +94,7 @@ export default function DoctorDashboard() {
     name: "",
     email: "",
     password: "Demo@123",
+    date_of_birth: "",
     age: "",
     sex: "1",
     phone_number: "",
@@ -101,6 +102,17 @@ export default function DoctorDashboard() {
     emergency_contact_phone: "",
     address: "",
   });
+
+  const calcAgeFromDob = (dobStr) => {
+    if (!dobStr) return null;
+    const dob = new Date(dobStr);
+    if (isNaN(dob.getTime())) return null;
+    const today = new Date();
+    let age = today.getFullYear() - dob.getFullYear();
+    const m = today.getMonth() - dob.getMonth();
+    if (m < 0 || (m === 0 && today.getDate() < dob.getDate())) age--;
+    return age >= 0 ? age : 0;
+  };
 
   // Clinical Assessment Form State
   const [assessmentForm, setAssessmentForm] = useState({
@@ -466,10 +478,21 @@ export default function DoctorDashboard() {
     setLoading(true);
 
     try {
+      // Calculate age from DOB; fall back to manual age field if DOB not provided
+      const dobAge = calcAgeFromDob(newPatientForm.date_of_birth);
+      const resolvedAge = dobAge !== null ? dobAge : (newPatientForm.age ? parseFloat(newPatientForm.age) : null);
+
       const payload = {
-        ...newPatientForm,
-        age: newPatientForm.age ? parseFloat(newPatientForm.age) : null,
+        name: newPatientForm.name,
+        email: newPatientForm.email,
+        password: newPatientForm.password,
+        date_of_birth: newPatientForm.date_of_birth || null,
+        age: resolvedAge,
         sex: newPatientForm.sex !== "" ? parseFloat(newPatientForm.sex) : null,
+        phone_number: newPatientForm.phone_number || null,
+        emergency_contact_name: newPatientForm.emergency_contact_name || null,
+        emergency_contact_phone: newPatientForm.emergency_contact_phone || null,
+        address: newPatientForm.address || null,
       };
 
       const created = await apiRequest(
@@ -488,6 +511,7 @@ export default function DoctorDashboard() {
         name: "",
         email: "",
         password: "Demo@123",
+        date_of_birth: "",
         age: "",
         sex: "1",
         phone_number: "",
@@ -2649,50 +2673,115 @@ export default function DoctorDashboard() {
       {/* MODAL 5: Register New Patient Directly */}
       {showAddPatientModal && (
         <div className="modal-overlay">
-          <div className="modal-card">
+          <div className="modal-card" style={{ maxWidth: 520 }}>
             <h3>Register Patient (Assigned to You)</h3>
             <form className="form" onSubmit={handleCreatePatient}>
-              <div className="form-group">
-                <label>Patient Full Name *</label>
-                <input
-                  type="text"
-                  placeholder="Full Name"
-                  value={newPatientForm.name}
-                  onChange={(e) => setNewPatientForm({ ...newPatientForm, name: e.target.value })}
-                  required
-                />
+              <div className="form-grid">
+                <div className="form-group">
+                  <label>Patient Full Name *</label>
+                  <input
+                    type="text"
+                    placeholder="Full Name"
+                    value={newPatientForm.name}
+                    onChange={(e) => setNewPatientForm({ ...newPatientForm, name: e.target.value })}
+                    required
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Email Address *</label>
+                  <input
+                    type="email"
+                    placeholder="patient@hospital.com"
+                    value={newPatientForm.email}
+                    onChange={(e) => setNewPatientForm({ ...newPatientForm, email: e.target.value })}
+                    required
+                  />
+                </div>
               </div>
 
-              <div className="form-group">
-                <label>Email Address *</label>
-                <input
-                  type="email"
-                  placeholder="patient@hospital.com"
-                  value={newPatientForm.email}
-                  onChange={(e) => setNewPatientForm({ ...newPatientForm, email: e.target.value })}
-                  required
-                />
+              {/* Demographics */}
+              <div style={{ backgroundColor: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 8, padding: 12, marginBottom: 10 }}>
+                <div style={{ fontWeight: 600, fontSize: "0.85rem", marginBottom: 8, color: "#1e293b" }}>🎂 Demographics</div>
+                <div className="form-grid">
+                  <div className="form-group">
+                    <label style={{ display: "flex", justifyContent: "space-between" }}>
+                      <span>Date of Birth</span>
+                      {calcAgeFromDob(newPatientForm.date_of_birth) !== null && (
+                        <span style={{ fontSize: "0.75rem", background: "#e0f2fe", color: "#0369a1", padding: "1px 6px", borderRadius: 12 }}>
+                          Age: {calcAgeFromDob(newPatientForm.date_of_birth)} yrs
+                        </span>
+                      )}
+                    </label>
+                    <input
+                      type="date"
+                      value={newPatientForm.date_of_birth}
+                      onChange={(e) => setNewPatientForm({ ...newPatientForm, date_of_birth: e.target.value })}
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Biological Sex</label>
+                    <select
+                      value={newPatientForm.sex}
+                      onChange={(e) => setNewPatientForm({ ...newPatientForm, sex: e.target.value })}
+                    >
+                      <option value="1">Male</option>
+                      <option value="0">Female</option>
+                    </select>
+                  </div>
+                </div>
+                {!newPatientForm.date_of_birth && (
+                  <div className="form-group" style={{ marginBottom: 0 }}>
+                    <label>Age (years) — if DOB not available</label>
+                    <input
+                      type="number"
+                      placeholder="e.g. 45"
+                      value={newPatientForm.age}
+                      onChange={(e) => setNewPatientForm({ ...newPatientForm, age: e.target.value })}
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* Contact Info */}
+              <div className="form-grid">
+                <div className="form-group">
+                  <label>Phone Number</label>
+                  <input
+                    type="tel"
+                    placeholder="+91 9876543210"
+                    value={newPatientForm.phone_number}
+                    onChange={(e) => setNewPatientForm({ ...newPatientForm, phone_number: e.target.value })}
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Address</label>
+                  <input
+                    type="text"
+                    placeholder="City / Area"
+                    value={newPatientForm.address}
+                    onChange={(e) => setNewPatientForm({ ...newPatientForm, address: e.target.value })}
+                  />
+                </div>
               </div>
 
               <div className="form-grid">
                 <div className="form-group">
-                  <label>Age (years)</label>
+                  <label>Emergency Contact Name</label>
                   <input
-                    type="number"
-                    placeholder="Age"
-                    value={newPatientForm.age}
-                    onChange={(e) => setNewPatientForm({ ...newPatientForm, age: e.target.value })}
+                    type="text"
+                    placeholder="Contact Person"
+                    value={newPatientForm.emergency_contact_name}
+                    onChange={(e) => setNewPatientForm({ ...newPatientForm, emergency_contact_name: e.target.value })}
                   />
                 </div>
                 <div className="form-group">
-                  <label>Biological Sex</label>
-                  <select
-                    value={newPatientForm.sex}
-                    onChange={(e) => setNewPatientForm({ ...newPatientForm, sex: e.target.value })}
-                  >
-                    <option value="1">Male</option>
-                    <option value="0">Female</option>
-                  </select>
+                  <label>Emergency Contact Phone</label>
+                  <input
+                    type="tel"
+                    placeholder="Emergency Phone"
+                    value={newPatientForm.emergency_contact_phone}
+                    onChange={(e) => setNewPatientForm({ ...newPatientForm, emergency_contact_phone: e.target.value })}
+                  />
                 </div>
               </div>
 
