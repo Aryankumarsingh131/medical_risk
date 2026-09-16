@@ -12,6 +12,8 @@ SECURITY_PATCHES.py
 
 # ── Python ────────────────────────────────────────────────────────────────────
 .venv/
+**/.venv/
+medical_risk/
 __pycache__/
 *.py[cod]
 *.pyo

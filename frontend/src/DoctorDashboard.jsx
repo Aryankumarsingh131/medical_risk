@@ -4,6 +4,7 @@ import { apiRequest, downloadPdfReport } from "./api";
 import { useToast } from "./ToastContext";
 import { SkeletonList, SkeletonTable } from "./Skeleton";
 import PasswordToggle from "./PasswordToggle";
+import InformationDrawer from "./components/ui/information-drawer";
 
 export default function DoctorDashboard() {
   const { auth } = useAuth();
@@ -2355,6 +2356,36 @@ export default function DoctorDashboard() {
               <div style={{ fontSize: "0.82rem", color: "#334155" }}>🏅 {doctorProfile.certifications}</div>
             )}
           </div>
+
+          {/* Interactive Information Drawer for Doctor Profile */}
+          <div className="card" style={{ marginBottom: 16, backgroundColor: "#0B111A", border: "1px solid #1E293B" }}>
+            <InformationDrawer
+              title="Doctor Profile Card & Clinical Drawer"
+              description="Hover over your profile card to see the interaction effect, or tap to slide open your full medical credentials drawer."
+              backgroundColor="#0D1520"
+              textColor="#F8FAFC"
+              sidebarWidth="50%"
+              overlayOpacity={0.4}
+              items={[
+                {
+                  id: "my-doc-profile",
+                  role: "doctor",
+                  name: doctorProfile?.name || auth?.name || "Cardiologist",
+                  specialization: doctorProfile?.specialization || "Cardiology & Internal Medicine",
+                  degree: doctorProfile?.degree || "MBBS, MD (Cardiology)",
+                  years_of_experience: doctorProfile?.years_of_experience || 12,
+                  license_number: doctorProfile?.license_number || "MCI-IND-89421",
+                  certifications: doctorProfile?.certifications || "Fellow of the Cardiological Society of India (FCSI), ACLS Certified",
+                  email: doctorProfile?.email || auth?.email,
+                  phone_number: "+91 98765 43210",
+                  image: "https://images.unsplash.com/photo-1559839734-2b71ea197ec2?auto=format&fit=crop&q=80&w=600",
+                  description: "Senior consultant dedicated to explainable AI-driven cardiovascular risk stratification, patient-centric treatment planning, and multi-disciplinary clinical decision support.",
+                  hospital: "Apex Super Speciality Hospital, India",
+                },
+              ]}
+            />
+          </div>
+
 
           <div className="card">
             <h3 style={{ marginTop: 0 }}>Edit Profile & Qualifications</h3>

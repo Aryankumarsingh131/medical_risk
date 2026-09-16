@@ -62,7 +62,12 @@ function DashboardShell() {
   const closeMobileNav = useCallback(() => setMobileNavOpen(false), []);
   const [showLanding, setShowLanding] = useState(true);
 
-  // Landing page shown first for unauthenticated users.
+  const handleLogout = () => {
+    setShowLanding(true);
+    logout();
+  };
+
+  // Landing page shown first for unauthenticated / new users.
   if (!auth) {
     if (showLanding) {
       return <LandingPage onGetStarted={() => setShowLanding(false)} />;
@@ -115,7 +120,7 @@ function DashboardShell() {
               <span style={{ color: "#64748b", marginLeft: 6 }}>&middot; {auth.hospital_code}</span>
             )}
           </span>
-          <button className="btn-secondary" onClick={logout}>
+          <button className="btn-secondary" onClick={handleLogout}>
             Log Out
           </button>
         </div>
