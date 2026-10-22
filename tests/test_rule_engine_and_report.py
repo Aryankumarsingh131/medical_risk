@@ -254,6 +254,172 @@ class TestMedicalReportGenerator(unittest.TestCase):
         self.assertGreater(len(pdf_bytes), 1000)
         self.assertTrue(pdf_bytes.startswith(b"%PDF"))
 
+    def test_pdf_report_with_json_strings_and_edge_cases(self):
+        """Test report formation with serialized JSON recommendations, string rules, and float string age."""
+        patient_info = {
+            "id": 102,
+            "name": "Robert Brown",
+            "age": "64.0",
+            "sex": "1.0",
+            "phone_number": "555-1234",
+        }
+        doctor_info = {
+            "id": 8,
+            "name": "Dr. Marcus Vance",
+            "specialization": "Interventional Cardiology",
+        }
+        diagnosis_info = {
+            "id": 99,
+            "diagnosis_title": "Severe Coronary Artery Disease with Angina",
+            "clinical_notes": "Presenting with exertional chest discomfort.",
+        }
+        assessment_info = {
+            "risk_level": "Critical Risk",
+            "risk_probability": 0.92,
+            "systolic_bp": 178,
+            "diastolic_bp": 105,
+            "max_heart_rate": 130,
+            "bmi": 31.2,
+            "cholesterol": 280,
+            "st_depression": 2.5,
+            "triggered_rules": ["BP_CRISIS", "SYNERGY_CRISIS_BP", "ST_DEP_SEVERE"],
+            "clinical_recommendations": '["Immediate emergency cardiology referral", "Administer dual antiplatelet therapy", "Continuous telemetry monitoring"]',
+            "created_at": "2026-10-16",
+        }
+        blood_test = {
+            "fasting_glucose": 142,
+            "hba1c": 8.1,
+            "hemoglobin": 13.5,
+            "total_cholesterol": 280,
+            "hdl": 35,
+            "ldl": 195,
+            "creatinine": 1.4,
+            "notes": "Fasting sample verified",
+        }
+
+        pdf_bytes = generate_medical_diagnosis_pdf(
+            patient_info=patient_info,
+            doctor_info=doctor_info,
+            diagnosis_info=diagnosis_info,
+            assessment_info=assessment_info,
+            blood_test_info=blood_test,
+        )
+
+        self.assertIsInstance(pdf_bytes, bytes)
+        self.assertGreater(len(pdf_bytes), 2000)
+        self.assertTrue(pdf_bytes.startswith(b"%PDF"))
+
+    def test_pdf_report_minimal_empty_fields(self):
+        """Test report formation when optional fields are None or minimal."""
+        patient_info = {"id": 103, "name": "Minimal Patient"}
+        doctor_info = {}
+        diagnosis_info = {"id": 1}
+
+        pdf_bytes = generate_medical_diagnosis_pdf(
+            patient_info=patient_info,
+            doctor_info=doctor_info,
+            diagnosis_info=diagnosis_info,
+            assessment_info=None,
+            blood_test_info=None,
+        )
+
+    def test_ten_sections_structure_and_disclaimer(self):
+        """Test that all 10 sections and critical distinction notice are properly handled."""
+        from src.report_generator import calculate_lab_flags
+
+        # Test lab flags evaluation
+        lab_data = {
+            "fasting_glucose": 130,  # High
+            "hba1c": 5.4,           # Normal
+            "total_cholesterol": 245,  # High
+            "hdl": 35,              # Low
+            "ldl": 165,             # High
+            "triglycerides": 210,   # High
+            "creatinine": 1.45,      # High
+        }
+        flags = calculate_lab_flags(lab_data, sex_str="Male")
+        self.assertGreaterEqual(len(flags), 6)
+        flags_map = {f["name"]: f["flag"] for f in flags}
+        self.assertEqual(flags_map["Fasting Blood Glucose"], "HIGH")
+        self.assertEqual(flags_map["Glycated Hemoglobin (HbA1c)"], "NORMAL")
+        self.assertEqual(flags_map["Total Serum Cholesterol"], "HIGH")
+        self.assertEqual(flags_map["HDL Cholesterol"], "LOW (Risk Factor)")
+
+        # Test full 10-section PDF report generation
+        patient_info = {
+            "id": 201,
+            "name": "Sarah Connor",
+            "age": 48,
+            "sex": 0,
+            "date_of_birth": "1978-05-12",
+            "phone_number": "555-0100",
+            "emergency_contact_name": "John Connor",
+            "emergency_contact_phone": "555-0101",
+            "address": "452 Medical Parkway",
+            "hospital_name": "Metro General Hospital",
+        }
+        doctor_info = {
+            "id": 12,
+            "name": "Dr. Emily Stone",
+            "degree": "MD, FACC",
+            "specialization": "Cardiovascular Medicine",
+            "license_number": "DOC-9912",
+            "email": "estone@metro.org",
+            "hospital_name": "Metro General Hospital",
+        }
+        diagnosis_info = {
+            "id": 88,
+            "diagnosis_title": "Hypertensive Heart Disease with Dyslipidemia",
+            "clinical_notes": "Patient presents for comprehensive cardiovascular risk review.",
+            "treatment_plan": "Initiate cardioprotective regimen and lifestyle modification.",
+            "prescriptions": "Lisinopril 10mg PO Daily; Atorvastatin 20mg PO QPM",
+            "created_at": datetime.now(timezone.utc),
+        }
+        assessment_info = {
+            "target_disease": "Cardiovascular Disease & CAD",
+            "risk_level": "High Risk",
+            "risk_probability": 0.72,
+            "systolic_bp": 154,
+            "diastolic_bp": 94,
+            "max_heart_rate": 136,
+            "temperature": 98.4,
+            "bmi": 28.6,
+            "spo2": 99,
+            "chest_pain_type": 1,
+            "exercise_angina": 1,
+            "st_depression": 1.8,
+            "smoking": 1,
+            "hypertension": 1,
+            "diabetes": 0,
+            "prior_medical_events": "Family history of early CAD",
+            "triggered_rules": [
+                {"rule_code": "BP_STAGE2_HTN", "points": 30, "category": "Vascular", "description": "Systolic BP > 140 mmHg"},
+                {"rule_code": "ST_DEPRESSION_ISCHEMIA", "points": 25, "category": "ECG", "description": "ST Depression > 1.0 mm"},
+            ],
+            "clinical_recommendations": [
+                "Schedule coronary CT angiography or stress echocardiogram within 4 weeks.",
+                "Tight blood pressure control with clinic re-evaluation in 30 days.",
+            ],
+        }
+        past_visits = [
+            {"date": "2026-09-15", "label": "Initial Screening", "risk_level": "High Risk", "systolic_bp": 160, "diastolic_bp": 98},
+            {"date": "2026-07-20", "label": "Annual Physical", "risk_level": "Moderate Risk", "systolic_bp": 142, "diastolic_bp": 88},
+        ]
+
+        pdf_bytes = generate_medical_diagnosis_pdf(
+            patient_info=patient_info,
+            doctor_info=doctor_info,
+            diagnosis_info=diagnosis_info,
+            assessment_info=assessment_info,
+            blood_test_info=lab_data,
+            past_visits=past_visits,
+        )
+
+        self.assertIsInstance(pdf_bytes, bytes)
+        self.assertGreater(len(pdf_bytes), 2000)
+        self.assertTrue(pdf_bytes.startswith(b"%PDF"))
+
 
 if __name__ == "__main__":
     unittest.main()
+

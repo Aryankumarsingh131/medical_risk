@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from "react";
 import { useAuth } from "./AuthContext";
-import { apiRequest, downloadPdfReport } from "./api";
+import { apiRequest, downloadPdfReport, fetchStructuredPatientReport } from "./api";
 import { useToast } from "./ToastContext";
 import { SkeletonCard } from "./Skeleton";
 import EmptyState from "./EmptyState";
 import CopyButton from "./CopyButton";
+import PatientReportModal from "./PatientReportModal";
 
 export default function PatientDashboard() {
   const [nearbyHospitals, setNearbyHospitals] = useState([]);
@@ -20,6 +21,10 @@ export default function PatientDashboard() {
   const [loading, setLoading] = useState(false);
   const [dataLoading, setDataLoading] = useState(true);
   const [pdfLoading, setPdfLoading] = useState(false);
+  const [reportModalOpen, setReportModalOpen] = useState(false);
+  const [reportData, setReportData] = useState(null);
+  const [reportLoading, setReportLoading] = useState(false);
+  const [reportPdfEndpoint, setReportPdfEndpoint] = useState(null);
 
   const [profile, setProfile] = useState({
     name: "",
@@ -165,6 +170,22 @@ export default function PatientDashboard() {
     }
   };
 
+  const handleViewStructuredReport = async (diagId = null) => {
+    setReportModalOpen(true);
+    setReportLoading(true);
+    const endpoint = diagId ? `/reports/diagnosis/${diagId}/pdf` : `/reports/patient/${auth.id}/latest-pdf`;
+    setReportPdfEndpoint(endpoint);
+    try {
+      const data = await fetchStructuredPatientReport(auth.id, diagId, auth?.access_token);
+      setReportData(data);
+    } catch (err) {
+      console.error("Failed to load structured report:", err);
+      toast.error("Failed to load clinical report data.");
+    } finally {
+      setReportLoading(false);
+    }
+  };
+
   return (
     <div className="container">
       {msg && <div className="alert alert-success">{msg}</div>}
@@ -204,14 +225,23 @@ export default function PatientDashboard() {
           </div>
         </div>
 
-        <button
-          type="button"
-          onClick={handleDownloadLatestPdf}
-          disabled={pdfLoading}
-          style={{ backgroundColor: "#15803d", borderColor: "#15803d" }}
-        >
-          {pdfLoading ? "Generating..." : "Download Medical Report (PDF)"}
-        </button>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button
+            type="button"
+            onClick={() => handleViewStructuredReport()}
+            style={{ backgroundColor: "#0284c7", borderColor: "#0284c7" }}
+          >
+            📋 View Clinical Report
+          </button>
+          <button
+            type="button"
+            onClick={handleDownloadLatestPdf}
+            disabled={pdfLoading}
+            style={{ backgroundColor: "#15803d", borderColor: "#15803d" }}
+          >
+            {pdfLoading ? "Generating..." : "Download Medical Report (PDF)"}
+          </button>
+        </div>
       </div>
 
       {/* Assigned Doctor Qualifications Card */}
@@ -334,15 +364,25 @@ export default function PatientDashboard() {
                       Attending: Dr. {diag.doctor_name} ({diag.doctor_specialization || "Physician"}) - {diag.created_at}
                     </span>
                   </div>
-                  <button
-                    type="button"
-                    className="btn-secondary"
-                    onClick={() => handleDownloadDiagnosisPdf(diag.id)}
-                    disabled={pdfLoading}
-                    style={{ fontSize: "0.75rem", padding: "3px 8px" }}
-                  >
-                    Export PDF
-                  </button>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      onClick={() => handleViewStructuredReport(diag.id)}
+                      style={{ fontSize: "0.75rem", padding: "3px 8px" }}
+                    >
+                      View Report
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      onClick={() => handleDownloadDiagnosisPdf(diag.id)}
+                      disabled={pdfLoading}
+                      style={{ fontSize: "0.75rem", padding: "3px 8px" }}
+                    >
+                      Export PDF
+                    </button>
+                  </div>
                 </div>
 
                 <div style={{ fontSize: "0.85rem", color: "#334155", marginBottom: 4 }}>
@@ -464,6 +504,17 @@ export default function PatientDashboard() {
       </div>
       </>
       )}
+
+      {/* 10-Section Structured Clinical Report Modal */}
+      <PatientReportModal
+        isOpen={reportModalOpen}
+        onClose={() => setReportModalOpen(false)}
+        reportData={reportData}
+        loading={reportLoading}
+        downloadPdfEndpoint={reportPdfEndpoint}
+        patientName={auth?.name || "Patient"}
+        token={auth?.access_token}
+      />
     </div>
   );
 }

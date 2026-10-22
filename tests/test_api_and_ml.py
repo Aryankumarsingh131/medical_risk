@@ -276,6 +276,7 @@ class TestMedicalRiskPlatform(unittest.TestCase):
         test_email = "selfreg.patient@hospital.com"
         old = self.db.query(User).filter(User.email == test_email).first()
         if old:
+            self.db.query(PatientAssessment).filter(PatientAssessment.patient_id == old.id).delete()
             self.db.query(PatientRegistrationRequest).filter(PatientRegistrationRequest.patient_id == old.id).delete()
             self.db.delete(old)
             self.db.commit()

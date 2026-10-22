@@ -1,19 +1,15 @@
 # Vercel Ignore Rules
-# Exclude root Python backend and ML dependencies from Vercel deployment
-# Leading slash / ensures frontend/src/ is NOT ignored!
-
-/api/
-/src/
-/models/
-/data/
-/scripts/
-/tests/
-/requirements.txt
-/run_all.py
-/Dockerfile
-/render.yaml
+# Exclude local caches, large binaries, notebooks and temporary files
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+brag-output/
+brag_repo/
 *.db
 *.db-shm
 *.db-wal
+*.db.bak*
 .env
-.env.*
+.env.local
+.env.*.local

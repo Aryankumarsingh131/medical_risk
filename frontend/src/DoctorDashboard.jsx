@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useAuth } from "./AuthContext";
-import { apiRequest, downloadPdfReport } from "./api";
+import { apiRequest, downloadPdfReport, fetchStructuredPatientReport } from "./api";
 import { useToast } from "./ToastContext";
 import { SkeletonList, SkeletonTable } from "./Skeleton";
 import PasswordToggle from "./PasswordToggle";
 import InformationDrawer from "./components/ui/information-drawer";
+import PatientReportModal from "./PatientReportModal";
 
 export default function DoctorDashboard() {
   const { auth } = useAuth();
@@ -36,6 +37,11 @@ export default function DoctorDashboard() {
   const [loading, setLoading] = useState(false);
   const [dataLoading, setDataLoading] = useState(true);
   const [pdfLoading, setPdfLoading] = useState(false);
+  const [reportModalOpen, setReportModalOpen] = useState(false);
+  const [reportData, setReportData] = useState(null);
+  const [reportLoading, setReportLoading] = useState(false);
+  const [reportPdfEndpoint, setReportPdfEndpoint] = useState(null);
+  const [reportPatientName, setReportPatientName] = useState("patient");
 
   const [hospitalDirectory, setHospitalDirectory] = useState([]);
   const [hospitalLoading, setHospitalLoading] = useState(false);
@@ -938,6 +944,23 @@ export default function DoctorDashboard() {
     }
   };
 
+  const handleViewPatientReport = async (patientId, patientName, diagId = null) => {
+    setReportModalOpen(true);
+    setReportLoading(true);
+    setReportPatientName(patientName || "patient");
+    const endpoint = diagId ? `/reports/diagnosis/${diagId}/pdf` : `/reports/patient/${patientId}/latest-pdf`;
+    setReportPdfEndpoint(endpoint);
+    try {
+      const data = await fetchStructuredPatientReport(patientId, diagId, auth?.access_token);
+      setReportData(data);
+    } catch (err) {
+      console.error("Failed to load structured report:", err);
+      toast.error("Failed to load clinical report data.");
+    } finally {
+      setReportLoading(false);
+    }
+  };
+
   const isDemographicsLocked = Boolean(
     !isGuestMode &&
     selectedPatient &&
@@ -1084,14 +1107,23 @@ export default function DoctorDashboard() {
         </div>
 
         {selectedPatient && !isGuestMode && (
-          <button
-            type="button"
-            onClick={() => handleDownloadPatientPdf(selectedPatient.id, selectedPatient.name)}
-            disabled={pdfLoading}
-            style={{ backgroundColor: "#15803d", borderColor: "#15803d" }}
-          >
-            {pdfLoading ? "Generating..." : "Export Medical PDF"}
-          </button>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button
+              type="button"
+              onClick={() => handleViewPatientReport(selectedPatient.id, selectedPatient.name)}
+              style={{ backgroundColor: "#0284c7", borderColor: "#0284c7", color: "#ffffff" }}
+            >
+              📋 View Patient Report
+            </button>
+            <button
+              type="button"
+              onClick={() => handleDownloadPatientPdf(selectedPatient.id, selectedPatient.name)}
+              disabled={pdfLoading}
+              style={{ backgroundColor: "#15803d", borderColor: "#15803d" }}
+            >
+              {pdfLoading ? "Generating..." : "Export Medical PDF"}
+            </button>
+          </div>
         )}
       </div>
 
@@ -1743,15 +1775,25 @@ export default function DoctorDashboard() {
                                   By Dr. {diag.doctor_name} ({diag.doctor_specialization || "Physician"}) - {new Date(diag.created_at).toLocaleString()}
                                 </div>
                               </div>
-                              <button
-                                type="button"
-                                className="btn-secondary"
-                                onClick={() => handleDownloadDiagnosisPdf(diag.id, selectedPatient.name)}
-                                disabled={pdfLoading}
-                                style={{ fontSize: "0.75rem", padding: "3px 8px" }}
-                              >
-                                Export PDF
-                              </button>
+                              <div style={{ display: "flex", gap: 6 }}>
+                                <button
+                                  type="button"
+                                  className="btn-secondary"
+                                  onClick={() => handleViewPatientReport(selectedPatient.id, selectedPatient.name, diag.id)}
+                                  style={{ fontSize: "0.75rem", padding: "3px 8px" }}
+                                >
+                                  View Report
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn-secondary"
+                                  onClick={() => handleDownloadDiagnosisPdf(diag.id, selectedPatient.name)}
+                                  disabled={pdfLoading}
+                                  style={{ fontSize: "0.75rem", padding: "3px 8px" }}
+                                >
+                                  Export PDF
+                                </button>
+                              </div>
                             </div>
                             <p style={{ fontSize: "0.85rem", color: "#334155", margin: "6px 0" }}>{diag.clinical_notes}</p>
                             {diag.treatment_plan && <div style={{ fontSize: "0.8rem", color: "#475569" }}><strong>Plan:</strong> {diag.treatment_plan}</div>}
@@ -2834,6 +2876,17 @@ export default function DoctorDashboard() {
       )}
       </>
       )}
+
+      {/* 10-Section Structured Clinical Report Modal */}
+      <PatientReportModal
+        isOpen={reportModalOpen}
+        onClose={() => setReportModalOpen(false)}
+        reportData={reportData}
+        loading={reportLoading}
+        downloadPdfEndpoint={reportPdfEndpoint}
+        patientName={reportPatientName}
+        token={auth?.access_token}
+      />
     </div>
   );
 }

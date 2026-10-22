@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Medical Risk XAI — Video Composition</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3/dist/gsap.min.js"></script>
+</head>
+<body>
+
+  <div id="root" data-composition-id="root" data-width="1920" data-height="1080" data-duration="18.0">
+    <!-- Ambient Background Glows -->
+    <div class="glow-orb glow-orb-teal" id="glow-teal" data-layout-allow-overflow></div>
+    <div class="glow-orb glow-orb-lime" id="glow-lime" data-layout-allow-overflow></div>
+
+    <!-- Audio Elements -->
+    <audio id="bg-music" data-start="0" data-duration="18.0" data-track-index="10" data-volume="0.32" src="assets/music/happy-beats-business-moves-vol-12-by-ende-dot-app.mp3"></audio>
+    <audio id="sfx-badge" data-start="0.3" data-duration="0.11" data-track-index="11" data-volume="0.70" src="assets/sfx/interface/drop_001.ogg"></audio>
+    <audio id="sfx-dash" data-start="4.0" data-duration="0.05" data-track-index="12" data-volume="0.65" src="assets/sfx/interface/select_008.ogg"></audio>
+    <audio id="sfx-shap-1" data-start="5.34" data-duration="0.60" data-track-index="13" data-volume="0.60" src="assets/sfx/casino/card-slide-1.ogg"></audio>
+    <audio id="sfx-shap-2" data-start="6.00" data-duration="0.60" data-track-index="14" data-volume="0.60" src="assets/sfx/casino/card-slide-1.ogg"></audio>
+    <audio id="sfx-shap-3" data-start="6.56" data-duration="0.60" data-track-index="15" data-volume="0.60" src="assets/sfx/casino/card-slide-1.ogg"></audio>
+    <audio id="sfx-score" data-start="8.74" data-duration="0.19" data-track-index="16" data-volume="0.80" src="assets/sfx/impact/impactSoft_medium_001.ogg"></audio>
+    <audio id="sfx-m1" data-start="9.83" data-duration="0.10" data-track-index="17" data-volume="0.70" src="assets/sfx/interface/click_001.ogg"></audio>
+    <audio id="sfx-m2" data-start="10.93" data-duration="0.10" data-track-index="18" data-volume="0.70" src="assets/sfx/interface/click_001.ogg"></audio>
+    <audio id="sfx-m3" data-start="12.02" data-duration="0.10" data-track-index="19" data-volume="0.70" src="assets/sfx/interface/click_001.ogg"></audio>
+    <audio id="sfx-m4" data-start="13.11" data-duration="0.10" data-track-index="20" data-volume="0.70" src="assets/sfx/interface/click_001.ogg"></audio>
+    <audio id="sfx-logo" data-start="14.5" data-duration="1.48" data-track-index="21" data-volume="0.85" src="assets/sfx/impact/impactBell_heavy_000.ogg"></audio>
+
+    <!-- ─────────────────────────────────────────────────────────────
+         SCENE 1: Hook & Vision (0.0s – 4.0s)
+         ───────────────────────────────────────────────────────────── -->
+    <section class="scene" id="scene-1">
+      <div class="badge" id="s1-badge">
+        <span class="badge-dot"></span>
+        <span>Clinically Validated Medical AI</span>
+      </div>
+      <h1 class="hero-title" id="s1-title">
+        Predict Risk with <br>
+        <span class="highlight-teal">Transparent</span>, <span class="highlight-lime">Explainable AI</span>
+      </h1>
+      <p class="hero-subtitle" id="s1-sub">
+        Cardiovascular machine learning with full clinical interpretability and multi-tenant hospital isolation.
+      </p>
+    </section>
+
+    <!-- ─────────────────────────────────────────────────────────────
+         SCENE 2: Live Assessment Engine & SHAP (4.0s – 9.0s)
+         ───────────────────────────────────────────────────────────── -->
+    <section class="scene" id="scene-2">
+      <div class="dashboard-left" id="s2-left">
+        <div class="section-label">
+          <span class="badge-dot"></span> Real-Time Clinical Evaluation
+        </div>
+        <h2 class="scene-heading">
+          Instant Risk Scoring with <br>
+          <span class="highlight-teal">SHAP Feature Attribution</span>
+        </h2>
+
+        <div class="glass-card">
+          <div class="input-box-label" style="margin-bottom: 12px; color: #1AAB9B;">Active Patient Clinical Profile</div>
+          <div class="patient-input-grid">
+            <div class="input-box">
+              <div class="input-box-label">Age</div>
+              <div class="input-box-val">58 yrs</div>
+            </div>
+            <div class="input-box">
+              <div class="input-box-label">Blood Pressure</div>
+              <div class="input-box-val">142/90</div>
+            </div>
+            <div class="input-box">
+              <div class="input-box-label">Cholesterol</div>
+              <div class="input-box-val">235 mg/dL</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="dashboard-right" id="s2-right">
+        <div class="risk-score-card" id="s2-score-card">
+          <div class="score-badge-wrap">
+            <div class="score-circle">
+              <div class="score-circle-inner">78%</div>
+            </div>
+            <div>
+              <div class="score-text-title">High Risk Detected</div>
+              <div class="score-text-sub">XGBoost &amp; Random Forest Ensemble</div>
+            </div>
+          </div>
+          <div style="font-family: 'JetBrains Mono', monospace; font-size: 14px; color: #3FB950; font-weight: 700;">
+            ● Model Verified
+          </div>
+        </div>
+
+        <div class="shap-container">
+          <div class="shap-row" id="shap-1">
+            <div class="shap-row-header">
+              <span>Systolic Blood Pressure</span>
+              <span class="shap-weight">+32.4% Impact</span>
+            </div>
+            <div class="shap-bar-bg">
+              <div class="shap-bar-fill" id="shap-bar-1"></div>
+            </div>
+          </div>
+
+          <div class="shap-row" id="shap-2">
+            <div class="shap-row-header">
+              <span>Serum Cholesterol Level</span>
+              <span class="shap-weight">+24.1% Impact</span>
+            </div>
+            <div class="shap-bar-bg">
+              <div class="shap-bar-fill" id="shap-bar-2"></div>
+            </div>
+          </div>
+
+          <div class="shap-row" id="shap-3">
+            <div class="shap-row-header">
+              <span>Vascular Age Factor</span>
+              <span class="shap-weight">+18.6% Impact</span>
+            </div>
+            <div class="shap-bar-bg">
+              <div class="shap-bar-fill" id="shap-bar-3"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ─────────────────────────────────────────────────────────────
+         SCENE 3: Benchmarked Multi-Tenant Scale (9.0s – 14.0s)
+         ───────────────────────────────────────────────────────────── -->
+    <section class="scene" id="scene-3">
+      <div class="metrics-header" id="s3-header">
+        <div class="badge">Enterprise Healthcare Scale</div>
+        <h2 class="scene-heading" style="font-size: 58px;">
+          Validated on <span class="highlight-teal">15+ Clinical Datasets</span>
+        </h2>
+      </div>
+
+      <div class="metrics-grid">
+        <div class="metric-tile" id="mt-1">
+          <div class="metric-val metric-val-teal">15+</div>
+          <div class="metric-title">Curated Datasets</div>
+          <div class="metric-desc">Framingham, Cleveland, Stroke &amp; Heart Failure records</div>
+        </div>
+
+        <div class="metric-tile" id="mt-2">
+          <div class="metric-val">21</div>
+          <div class="metric-title">Clinical Indicators</div>
+          <div class="metric-desc">Multi-factorial physiological biomarkers analyzed</div>
+        </div>
+
+        <div class="metric-tile" id="mt-3">
+          <div class="metric-val metric-val-teal">0.894</div>
+          <div class="metric-title">ROC-AUC Score</div>
+          <div class="metric-desc">Auto-benchmarked XGBoost classification precision</div>
+        </div>
+
+        <div class="metric-tile" id="mt-4">
+          <div class="metric-val">100%</div>
+          <div class="metric-title">Isolated Tenants</div>
+          <div class="metric-desc">Strict hospital data boundaries and zero data leaks</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ─────────────────────────────────────────────────────────────
+         SCENE 4: Final Outro & Call to Action (14.0s – 18.0s)
+         ───────────────────────────────────────────────────────────── -->
+    <section class="scene" id="scene-4">
+      <div class="logo-symbol" id="s4-logo">
+        <div class="logo-cross-h"></div>
+        <div class="logo-cross-v"></div>
+      </div>
+
+      <h1 class="outro-brand" id="s4-brand">Medical Risk XAI</h1>
+      <p class="outro-tagline" id="s4-tagline">
+        Transparent. Auditable. Clinically Validated.
+      </p>
+
+      <div class="outro-cta-pill" id="s4-cta">
+        <span>Explore Platform</span>
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+          <path d="M4 10h12M11 5l5 5-5 5" stroke="#FFFFFF" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+    </section>
+
+  </div>
+
+  <script>
+    const tl = gsap.timeline({ paused: true });
+
+    // ── SCENE 1: 0.0s – 4.0s ──────────────────────────────────────────
+    tl.to("#scene-1", { opacity: 1, duration: 0.4, ease: "power2.out" }, 0.0);
+    tl.from("#s1-badge", { y: -30, opacity: 0, duration: 0.6, ease: "back.out(1.5)" }, 0.2);
+    tl.from("#s1-title", { y: 40, opacity: 0, duration: 0.8, ease: "power3.out" }, 0.5);
+    tl.from("#s1-sub", { y: 30, opacity: 0, duration: 0.8, ease: "power3.out" }, 0.9);
+    tl.to("#glow-teal", { scale: 1.2, duration: 3.5, ease: "sine.inOut" }, 0.0);
+    tl.to("#scene-1", { opacity: 0, scale: 0.96, duration: 0.35, ease: "power2.in" }, 3.7);
+
+    // ── SCENE 2: 4.0s – 9.0s ──────────────────────────────────────────
+    tl.to("#scene-2", { opacity: 1, duration: 0.4, ease: "power2.out" }, 4.0);
+    tl.from("#s2-left", { x: -60, opacity: 0, duration: 0.7, ease: "power3.out" }, 4.1);
+    tl.from("#s2-right", { x: 60, opacity: 0, duration: 0.7, ease: "power3.out" }, 4.2);
+    tl.from("#s2-score-card", { scale: 0.9, opacity: 0, duration: 0.5, ease: "back.out(1.3)" }, 4.6);
+
+    // // beat-grid: SHAP bars sliding in
+    tl.from("#shap-1", { x: 40, opacity: 0, duration: 0.45, ease: "power2.out" }, 5.34);
+    tl.to("#shap-bar-1", { width: "75%", duration: 0.7, ease: "power2.out" }, 5.45);
+
+    tl.from("#shap-2", { x: 40, opacity: 0, duration: 0.45, ease: "power2.out" }, 6.00);
+    tl.to("#shap-bar-2", { width: "58%", duration: 0.7, ease: "power2.out" }, 6.10);
+
+    tl.from("#shap-3", { x: 40, opacity: 0, duration: 0.45, ease: "power2.out" }, 6.56);
+    tl.to("#shap-bar-3", { width: "42%", duration: 0.7, ease: "power2.out" }, 6.66);
+
+    // // beat-locked: major score pulse at 8.74s
+    tl.to("#s2-score-card", { scale: 1.04, duration: 0.15, yoyo: true, repeat: 1, ease: "power2.inOut" }, 8.74);
+    tl.to("#scene-2", { opacity: 0, scale: 0.96, duration: 0.35, ease: "power2.in" }, 8.75);
+
+    // ── SCENE 3: 9.0s – 14.0s ─────────────────────────────────────────
+    tl.to("#scene-3", { opacity: 1, duration: 0.4, ease: "power2.out" }, 9.0);
+    tl.from("#s3-header", { y: -30, opacity: 0, duration: 0.6, ease: "power3.out" }, 9.1);
+
+    // // beat-grid: sequential tiles (9.83s, 10.93s, 12.02s, 13.11s)
+    tl.from("#mt-1", { y: 50, opacity: 0, duration: 0.55, ease: "back.out(1.4)" }, 9.83);
+    tl.from("#mt-2", { y: 50, opacity: 0, duration: 0.55, ease: "back.out(1.4)" }, 10.93);
+    tl.from("#mt-3", { y: 50, opacity: 0, duration: 0.55, ease: "back.out(1.4)" }, 12.02);
+    tl.from("#mt-4", { y: 50, opacity: 0, duration: 0.55, ease: "back.out(1.4)" }, 13.11);
+    tl.to("#scene-3", { opacity: 0, scale: 0.96, duration: 0.35, ease: "power2.in" }, 13.75);
+
+    // ── SCENE 4: 14.0s – 18.0s ────────────────────────────────────────
+    tl.to("#scene-4", { opacity: 1, duration: 0.4, ease: "power2.out" }, 14.0);
+    // // beat-locked: Logo hit
+    tl.from("#s4-logo", { scale: 0, rotation: -45, opacity: 0, duration: 0.8, ease: "back.out(1.6)" }, 14.3);
+    tl.from("#s4-brand", { y: 30, opacity: 0, duration: 0.7, ease: "power3.out" }, 14.8);
+    tl.from("#s4-tagline", { y: 20, opacity: 0, duration: 0.7, ease: "power3.out" }, 15.2);
+    tl.from("#s4-cta", { scale: 0.85, opacity: 0, duration: 0.6, ease: "back.out(1.5)" }, 15.6);
+    tl.to("#s4-logo", { boxShadow: "0 0 80px rgba(26, 171, 155, 0.9), 0 20px 40px rgba(0, 0, 0, 0.6)", duration: 1.5, repeat: 1, yoyo: true, ease: "sine.inOut" }, 16.0);
+
+    // Register timeline
+    window.__timelines = window.__timelines || {};
+    window.__timelines["root"] = tl;
+  </script>
+</body>
+</html>

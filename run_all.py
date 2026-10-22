@@ -42,6 +42,11 @@ elif venv_nix.exists():
 else:
     PYTHON_EXEC = sys.executable
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(line_buffering=True)
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(line_buffering=True)
+
 
 
 def log_step(title: str) -> None:
@@ -152,9 +157,14 @@ def main() -> None:
 
     # 4. Start React/Vite Frontend
     is_windows = sys.platform.startswith("win")
+    if is_windows:
+        nodejs_dir = Path(r"C:\Program Files\nodejs")
+        if nodejs_dir.exists() and str(nodejs_dir) not in os.environ.get("PATH", ""):
+            os.environ["PATH"] = str(nodejs_dir) + os.pathsep + os.environ.get("PATH", "")
     npm_cmd = "npm.cmd" if is_windows else "npm"
     frontend_port = find_available_port()
     frontend_url = f"http://127.0.0.1:{frontend_port}"
+    frontend_env = dict(os.environ)
     frontend_proc = subprocess.Popen(
         [npm_cmd, "run", "dev", "--", "--host", "127.0.0.1", "--port", str(frontend_port), "--strictPort"],
         cwd=str(FRONTEND_DIR),
@@ -163,6 +173,7 @@ def main() -> None:
         text=True,
         bufsize=1,
         shell=is_windows,
+        env=frontend_env,
     )
     t_frontend = threading.Thread(
         target=stream_logs,

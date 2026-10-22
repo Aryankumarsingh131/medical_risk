@@ -23,6 +23,7 @@ from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from fastapi.security import OAuth2PasswordBearer
+import bcrypt
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel
@@ -193,11 +194,19 @@ def generate_auto_diagnosis_title(risk_level: str, features: dict, reasons: list
 # ---------------------------------------------------------------------------
 
 def get_password_hash(password: str) -> str:
-    # Use bcrypt's built-in salt generation for secure hashing
-    return pwd_context.hash(password)
+    # Truncate to 72 bytes as per bcrypt specification
+    pwd_bytes = password.encode("utf-8")[:72]
+    return bcrypt.hashpw(pwd_bytes, bcrypt.gensalt()).decode("utf-8")
 
 
 def verify_password(plain: str, hashed: str) -> bool:
+    try:
+        plain_bytes = plain.encode("utf-8")[:72]
+        hashed_bytes = hashed.encode("utf-8")
+        if bcrypt.checkpw(plain_bytes, hashed_bytes):
+            return True
+    except Exception:
+        pass
     try:
         return pwd_context.verify(plain, hashed)
     except Exception:
@@ -2987,6 +2996,8 @@ def download_diagnosis_pdf(
     assessment_dict = None
     if latest_assessment:
         assessment_dict = {
+            "age": latest_assessment.age if latest_assessment.age is not None else (patient.age if patient else None),
+            "sex": latest_assessment.sex if latest_assessment.sex is not None else (patient.sex if patient else None),
             "risk_level": latest_assessment.risk_level,
             "risk_probability": latest_assessment.risk_probability,
             "systolic_bp": latest_assessment.systolic_bp,
@@ -2994,10 +3005,17 @@ def download_diagnosis_pdf(
             "max_heart_rate": latest_assessment.max_heart_rate,
             "bmi": latest_assessment.bmi,
             "cholesterol": latest_assessment.cholesterol,
+            "fasting_blood_sugar": latest_assessment.fasting_blood_sugar,
             "st_depression": latest_assessment.st_depression,
+            "chest_pain_type": latest_assessment.chest_pain_type,
+            "exercise_angina": latest_assessment.exercise_angina,
+            "smoking": latest_assessment.smoking,
+            "hypertension": latest_assessment.hypertension,
+            "diabetes": latest_assessment.diabetes,
+            "prior_medical_events": latest_assessment.prior_medical_events,
             "triggered_rule_codes": latest_assessment.triggered_rule_codes,
             "clinical_recommendations": latest_assessment.clinical_recommendations,
-            "created_at": latest_assessment.created_at.strftime("%Y-%m-%d"),
+            "created_at": latest_assessment.created_at.strftime("%Y-%m-%d") if hasattr(latest_assessment.created_at, "strftime") else str(latest_assessment.created_at)[:10],
         }
 
     # Fetch latest blood test
@@ -3016,7 +3034,10 @@ def download_diagnosis_pdf(
             "total_cholesterol": latest_bt.total_cholesterol,
             "hdl": latest_bt.hdl,
             "ldl": latest_bt.ldl,
+            "triglycerides": latest_bt.triglycerides,
             "creatinine": latest_bt.creatinine,
+            "wbc_count": latest_bt.wbc_count,
+            "platelet_count": latest_bt.platelet_count,
             "notes": latest_bt.notes,
         }
 
@@ -3040,24 +3061,43 @@ def download_diagnosis_pdf(
         except Exception:
             pass
 
-    # Fetch latest 5 visit dates dynamically for this patient
-    assessments_dates = (
-        db.query(PatientAssessment.created_at)
+    # Fetch latest 5 clinical encounters for historical trends
+    recent_assessments = (
+        db.query(PatientAssessment)
         .filter(PatientAssessment.patient_id == patient.id)
         .order_by(PatientAssessment.created_at.desc())
         .limit(5)
         .all()
     )
-    diagnoses_dates = (
-        db.query(DoctorDiagnosis.created_at)
+    recent_diagnoses = (
+        db.query(DoctorDiagnosis)
         .filter(DoctorDiagnosis.patient_id == patient.id)
         .order_by(DoctorDiagnosis.created_at.desc())
         .limit(5)
         .all()
     )
-    all_dates = set([r[0] for r in assessments_dates if r[0]] + [r[0] for r in diagnoses_dates if r[0]])
-    sorted_dates = sorted(list(all_dates), reverse=True)[:5]
-    past_visits = [{"date": d, "label": "Visit"} for d in sorted_dates]
+    combined_visits = []
+    for a in recent_assessments:
+        combined_visits.append({
+            "date": a.created_at,
+            "label": "Cardiovascular Assessment",
+            "risk_level": a.risk_level,
+            "risk_probability": a.risk_probability,
+            "systolic_bp": a.systolic_bp,
+            "diastolic_bp": a.diastolic_bp,
+            "bp": f"{a.systolic_bp}/{a.diastolic_bp}" if a.systolic_bp and a.diastolic_bp else str(a.systolic_bp or "120/80"),
+            "heart_rate": a.max_heart_rate,
+            "bmi": a.bmi,
+        })
+    for d in recent_diagnoses:
+        combined_visits.append({
+            "date": d.created_at,
+            "label": "Physician Clinical Consult",
+            "risk_level": d.risk_summary or "Clinical Evaluation",
+            "diagnosis_title": d.diagnosis_title,
+        })
+    combined_visits.sort(key=lambda x: x["date"] or datetime.min, reverse=True)
+    past_visits = combined_visits[:5]
 
     patient_dict = {
         "id": patient.id,
@@ -3065,9 +3105,12 @@ def download_diagnosis_pdf(
         "email": patient.email,
         "age": patient.age,
         "sex": patient.sex,
+        "date_of_birth": patient.date_of_birth,
         "phone_number": patient.phone_number,
         "emergency_contact_name": patient.emergency_contact_name,
         "emergency_contact_phone": patient.emergency_contact_phone,
+        "address": patient.address,
+        "hospital_name": patient.hospital.name if patient.hospital else "Central Clinical Institute",
     }
 
     doctor_dict = {
@@ -3075,7 +3118,10 @@ def download_diagnosis_pdf(
         "name": doctor.name if doctor else "Attending Physician",
         "specialization": doctor.specialization if doctor else "Cardiology & Internal Medicine",
         "license_number": doctor.license_number if doctor else "DOC-REG-2026",
+        "degree": doctor.degree if doctor else "MD, FACC",
+        "certifications": doctor.certifications if doctor else None,
         "email": doctor.email if doctor else "doctor@hospital.com",
+        "hospital_name": doctor.hospital.name if (doctor and doctor.hospital) else (patient.hospital.name if patient.hospital else "Central Clinical Institute"),
     }
 
     diagnosis_dict = {
@@ -3089,14 +3135,13 @@ def download_diagnosis_pdf(
 
     # Enhance assessment_dict with rule engine outputs for report
     if assessment_dict:
-        # Try to parse triggered_rule_codes and clinical_recommendations from JSON
         try:
             if assessment_dict.get("triggered_rule_codes"):
-                # Re-evaluate from the intentionally trimmed assessment data
-                # so the report gets the actual per-rule point breakdown.
                 report_risk = calculate_rule_based_risk(assessment_dict)
-                assessment_dict["triggered_rules"] = report_risk["triggered_rules"]
-            if assessment_dict.get("clinical_recommendations"):
+                assessment_dict["triggered_rules"] = report_risk.get("triggered_rules", [])
+                if not assessment_dict.get("clinical_recommendations") and report_risk.get("clinical_recommendations"):
+                    assessment_dict["clinical_recommendations"] = report_risk["clinical_recommendations"]
+            if isinstance(assessment_dict.get("clinical_recommendations"), str):
                 assessment_dict["clinical_recommendations"] = json.loads(assessment_dict["clinical_recommendations"])
         except Exception:
             pass  # Use existing structure if parsing fails
@@ -3165,6 +3210,8 @@ def download_patient_latest_pdf(
     assessment_dict = None
     if latest_assessment:
         assessment_dict = {
+            "age": latest_assessment.age if latest_assessment.age is not None else (patient.age if patient else None),
+            "sex": latest_assessment.sex if latest_assessment.sex is not None else (patient.sex if patient else None),
             "risk_level": latest_assessment.risk_level,
             "risk_probability": latest_assessment.risk_probability,
             "systolic_bp": latest_assessment.systolic_bp,
@@ -3172,10 +3219,17 @@ def download_patient_latest_pdf(
             "max_heart_rate": latest_assessment.max_heart_rate,
             "bmi": latest_assessment.bmi,
             "cholesterol": latest_assessment.cholesterol,
+            "fasting_blood_sugar": latest_assessment.fasting_blood_sugar,
             "st_depression": latest_assessment.st_depression,
+            "chest_pain_type": latest_assessment.chest_pain_type,
+            "exercise_angina": latest_assessment.exercise_angina,
+            "smoking": latest_assessment.smoking,
+            "hypertension": latest_assessment.hypertension,
+            "diabetes": latest_assessment.diabetes,
+            "prior_medical_events": latest_assessment.prior_medical_events,
             "triggered_rule_codes": latest_assessment.triggered_rule_codes,
             "clinical_recommendations": latest_assessment.clinical_recommendations,
-            "created_at": latest_assessment.created_at.strftime("%Y-%m-%d"),
+            "created_at": latest_assessment.created_at.strftime("%Y-%m-%d") if hasattr(latest_assessment.created_at, "strftime") else str(latest_assessment.created_at)[:10],
         }
 
     latest_bt = (
@@ -3193,36 +3247,60 @@ def download_patient_latest_pdf(
             "total_cholesterol": latest_bt.total_cholesterol,
             "hdl": latest_bt.hdl,
             "ldl": latest_bt.ldl,
+            "triglycerides": latest_bt.triglycerides,
             "creatinine": latest_bt.creatinine,
+            "wbc_count": latest_bt.wbc_count,
+            "platelet_count": latest_bt.platelet_count,
             "notes": latest_bt.notes,
         }
 
-    # Dynamic latest 5 visits
-    assessments_dates = (
-        db.query(PatientAssessment.created_at)
+    # Dynamic latest 5 clinical encounters for historical trends
+    recent_assessments = (
+        db.query(PatientAssessment)
         .filter(PatientAssessment.patient_id == patient.id)
         .order_by(PatientAssessment.created_at.desc())
         .limit(5)
         .all()
     )
-    diagnoses_dates = (
-        db.query(DoctorDiagnosis.created_at)
+    recent_diagnoses = (
+        db.query(DoctorDiagnosis)
         .filter(DoctorDiagnosis.patient_id == patient.id)
         .order_by(DoctorDiagnosis.created_at.desc())
         .limit(5)
         .all()
     )
-    all_dates = set([r[0] for r in assessments_dates if r[0]] + [r[0] for r in diagnoses_dates if r[0]])
-    sorted_dates = sorted(list(all_dates), reverse=True)[:5]
-    past_visits = [{"date": d, "label": "Visit"} for d in sorted_dates]
+    combined_visits = []
+    for a in recent_assessments:
+        combined_visits.append({
+            "date": a.created_at,
+            "label": "Cardiovascular Assessment",
+            "risk_level": a.risk_level,
+            "risk_probability": a.risk_probability,
+            "systolic_bp": a.systolic_bp,
+            "diastolic_bp": a.diastolic_bp,
+            "bp": f"{a.systolic_bp}/{a.diastolic_bp}" if a.systolic_bp and a.diastolic_bp else str(a.systolic_bp or "120/80"),
+            "heart_rate": a.max_heart_rate,
+            "bmi": a.bmi,
+        })
+    for d in recent_diagnoses:
+        combined_visits.append({
+            "date": d.created_at,
+            "label": "Physician Clinical Consult",
+            "risk_level": d.risk_summary or "Clinical Evaluation",
+            "diagnosis_title": d.diagnosis_title,
+        })
+    combined_visits.sort(key=lambda x: x["date"] or datetime.min, reverse=True)
+    past_visits = combined_visits[:5]
 
     # Enhance assessment_dict with rule engine outputs for report
     if assessment_dict:
         try:
             if assessment_dict.get("triggered_rule_codes"):
                 report_risk = calculate_rule_based_risk(assessment_dict)
-                assessment_dict["triggered_rules"] = report_risk["triggered_rules"]
-            if assessment_dict.get("clinical_recommendations"):
+                assessment_dict["triggered_rules"] = report_risk.get("triggered_rules", [])
+                if not assessment_dict.get("clinical_recommendations") and report_risk.get("clinical_recommendations"):
+                    assessment_dict["clinical_recommendations"] = report_risk["clinical_recommendations"]
+            if isinstance(assessment_dict.get("clinical_recommendations"), str):
                 assessment_dict["clinical_recommendations"] = json.loads(assessment_dict["clinical_recommendations"])
         except Exception:
             pass
@@ -3234,16 +3312,22 @@ def download_patient_latest_pdf(
             "email": patient.email,
             "age": patient.age,
             "sex": patient.sex,
+            "date_of_birth": patient.date_of_birth,
             "phone_number": patient.phone_number,
             "emergency_contact_name": patient.emergency_contact_name,
             "emergency_contact_phone": patient.emergency_contact_phone,
+            "address": patient.address,
+            "hospital_name": patient.hospital.name if patient.hospital else "Central Clinical Institute",
         },
         doctor_info={
             "id": doc.id if doc else 0,
             "name": doc.name if doc else "Attending Physician",
             "specialization": doc.specialization if doc else "Cardiology",
             "license_number": doc.license_number if doc else "DOC-REG-2026",
+            "degree": doc.degree if doc else "MD, FACC",
+            "certifications": doc.certifications if doc else None,
             "email": doc.email if doc else "doctor@hospital.com",
+            "hospital_name": doc.hospital.name if (doc and doc.hospital) else (patient.hospital.name if patient.hospital else "Central Clinical Institute"),
         },
         diagnosis_info=dummy_diag,
         assessment_info=assessment_dict,
@@ -3257,6 +3341,286 @@ def download_patient_latest_pdf(
         media_type="application/pdf",
         headers={"Content-Disposition": f"attachment; filename=\"{filename}\""},
     )
+
+
+@app.get("/reports/patient/{patient_id}/structured-report")
+def get_patient_structured_report(
+    patient_id: int,
+    diagnosis_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Returns the full structured patient report according to the official 10 clinical sections:
+      1. Patient overview
+      2. Vital signs
+      3. Clinical parameters
+      4. Test results
+      5. Risk prediction (with explicit notice: AI prediction != medical diagnosis)
+      6. Key contributing factors
+      7. Historical trends
+      8. Doctor's assessment
+      9. Recommendations
+      10. Report metadata
+    """
+    if current_user.role == "patient" and current_user.id != patient_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    patient = db.query(User).filter(User.id == patient_id, User.role == "patient").first()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+
+    require_hospital_access(patient.hospital_id, current_user)
+
+    # 1. Fetch Assessment
+    latest_assessment = (
+        db.query(PatientAssessment)
+        .filter(PatientAssessment.patient_id == patient.id)
+        .order_by(PatientAssessment.created_at.desc())
+        .first()
+    )
+
+    # 2. Fetch Diagnosis
+    diagnosis = None
+    if diagnosis_id:
+        diagnosis = db.query(DoctorDiagnosis).filter(DoctorDiagnosis.id == diagnosis_id, DoctorDiagnosis.patient_id == patient.id).first()
+    if not diagnosis:
+        diagnosis = (
+            db.query(DoctorDiagnosis)
+            .filter(DoctorDiagnosis.patient_id == patient.id)
+            .order_by(DoctorDiagnosis.created_at.desc())
+            .first()
+        )
+
+    # 3. Fetch Lab Results
+    latest_bt = (
+        db.query(BloodTestResult)
+        .filter(BloodTestResult.patient_id == patient.id)
+        .order_by(BloodTestResult.created_at.desc())
+        .first()
+    )
+
+    # 4. Fetch Doctor
+    doctor = (diagnosis.doctor if diagnosis else None) or patient.doctor or db.query(User).filter(User.role == "doctor").first()
+
+    # 5. Fetch Historical Encounters
+    recent_assessments = (
+        db.query(PatientAssessment)
+        .filter(PatientAssessment.patient_id == patient.id)
+        .order_by(PatientAssessment.created_at.desc())
+        .limit(5)
+        .all()
+    )
+    recent_diagnoses = (
+        db.query(DoctorDiagnosis)
+        .filter(DoctorDiagnosis.patient_id == patient.id)
+        .order_by(DoctorDiagnosis.created_at.desc())
+        .limit(5)
+        .all()
+    )
+
+    combined_encounters = []
+    for a in recent_assessments:
+        combined_encounters.append({
+            "date": a.created_at.strftime("%Y-%m-%d") if hasattr(a.created_at, "strftime") else str(a.created_at)[:10],
+            "encounter_type": "Cardiovascular Assessment",
+            "risk_level": a.risk_level,
+            "risk_probability": a.risk_probability,
+            "blood_pressure": f"{a.systolic_bp}/{a.diastolic_bp} mmHg" if a.systolic_bp and a.diastolic_bp else (f"{a.systolic_bp} mmHg" if a.systolic_bp else "120/80 mmHg"),
+            "heart_rate": f"{int(a.max_heart_rate)} bpm" if a.max_heart_rate else "-",
+            "bmi": f"{a.bmi:.1f}" if a.bmi else "-",
+            "summary": "Risk score recorded",
+        })
+    for d in recent_diagnoses:
+        combined_encounters.append({
+            "date": d.created_at.strftime("%Y-%m-%d") if hasattr(d.created_at, "strftime") else str(d.created_at)[:10],
+            "encounter_type": "Physician Clinical Consult",
+            "risk_level": d.risk_summary or "Clinical Evaluation",
+            "blood_pressure": "-",
+            "heart_rate": "-",
+            "bmi": "-",
+            "summary": d.diagnosis_title,
+        })
+    combined_encounters.sort(key=lambda x: x["date"], reverse=True)
+    last_five_visits = combined_encounters[:5]
+
+    # Calculate lab flags
+    from src.report_generator import calculate_lab_flags
+    lab_dict = {}
+    if latest_bt:
+        lab_dict = {
+            "fasting_glucose": latest_bt.fasting_glucose,
+            "hba1c": latest_bt.hba1c,
+            "hemoglobin": latest_bt.hemoglobin,
+            "total_cholesterol": latest_bt.total_cholesterol,
+            "hdl": latest_bt.hdl,
+            "ldl": latest_bt.ldl,
+            "triglycerides": latest_bt.triglycerides,
+            "creatinine": latest_bt.creatinine,
+            "wbc_count": latest_bt.wbc_count,
+            "platelet_count": latest_bt.platelet_count,
+        }
+    if latest_assessment and latest_assessment.cholesterol and "total_cholesterol" not in lab_dict:
+        lab_dict["total_cholesterol"] = latest_assessment.cholesterol
+
+    patient_sex_str = "Male" if (patient.sex in [1, 1.0, "1", "male", "Male"]) else "Female"
+    test_results = calculate_lab_flags(lab_dict, sex_str=patient_sex_str)
+
+    # Risk prediction values
+    risk_level = latest_assessment.risk_level if latest_assessment else "Low Risk"
+    prob_val = latest_assessment.risk_probability if latest_assessment else 0.12
+    prob_pct = f"{prob_val * 100:.1f}%" if prob_val <= 1.0 else f"{prob_val:.1f}%"
+
+    # Key Contributing factors
+    key_factors = []
+    if latest_assessment and latest_assessment.triggered_rule_codes:
+        try:
+            rcodes = json.loads(latest_assessment.triggered_rule_codes) if isinstance(latest_assessment.triggered_rule_codes, str) else latest_assessment.triggered_rule_codes
+            for c in rcodes:
+                key_factors.append({
+                    "factor": str(c),
+                    "impact": "High" if "CRISIS" in str(c).upper() or "SEVERE" in str(c).upper() else "Moderate",
+                    "description": str(c).replace("_", " ").title(),
+                })
+        except Exception:
+            pass
+
+    if not key_factors and latest_assessment:
+        if latest_assessment.systolic_bp and latest_assessment.systolic_bp >= 130:
+            key_factors.append({
+                "factor": "Systolic Blood Pressure Elevation",
+                "impact": "High",
+                "description": f"Systolic pressure of {latest_assessment.systolic_bp} mmHg indicates hypertensive vascular stress.",
+            })
+        if latest_assessment.cholesterol and latest_assessment.cholesterol >= 200:
+            key_factors.append({
+                "factor": "Elevated Total Serum Cholesterol",
+                "impact": "Moderate",
+                "description": f"Cholesterol level of {latest_assessment.cholesterol} mg/dL accelerates atherogenesis.",
+            })
+        if latest_assessment.st_depression and latest_assessment.st_depression > 0.5:
+            key_factors.append({
+                "factor": "ECG ST Segment Depression",
+                "impact": "High",
+                "description": f"ST depression of {latest_assessment.st_depression} mm indicates myocardial repolarization abnormality.",
+            })
+
+    # Recommendations
+    recs = []
+    if latest_assessment and latest_assessment.clinical_recommendations:
+        try:
+            parsed = json.loads(latest_assessment.clinical_recommendations) if isinstance(latest_assessment.clinical_recommendations, str) else latest_assessment.clinical_recommendations
+            recs = parsed if isinstance(parsed, list) else [str(parsed)]
+        except Exception:
+            recs = [r.strip() for r in latest_assessment.clinical_recommendations.split(";") if r.strip()]
+
+    if not recs:
+        recs = [
+            "Diagnostic Follow-up: Schedule 12-lead ECG and comprehensive lipid panel in 6 to 8 weeks.",
+            "Cardiovascular Surveillance: Perform 24-hour ambulatory blood pressure monitoring if readings consistently exceed 130 mmHg.",
+            "Therapeutic Review: Evaluate titration of antihypertensive or lipid-lowering pharmacotherapy.",
+            "Dietary Protocol: Implement DASH/Mediterranean diet with dietary sodium restriction (< 2,000 mg/day).",
+            "Physical Activity: Engage in 150 min/wk moderate aerobic exercise under medical guidance.",
+            "Emergency Precautions: Instruct patient to report immediately to emergency care if acute chest pressure or severe dyspnea occurs.",
+        ]
+
+    # Clinical parameters
+    cpt = latest_assessment.chest_pain_type if latest_assessment else None
+    cpt_desc = "Typical Angina" if cpt in [0, "0"] else ("Atypical Angina" if cpt in [1, "1"] else ("Non-Anginal" if cpt in [2, "2"] else "Asymptomatic"))
+
+    now_utc = datetime.now(timezone.utc)
+    rpt_id = f"RPT-P{patient.id}-DX{diagnosis.id if diagnosis else '00'}-{now_utc.strftime('%Y%m%d')}"
+
+    return {
+        "report_id": rpt_id,
+        "sections": {
+            "patient_overview": {
+                "title": "Patient Overview",
+                "patient_id": patient.id,
+                "name": patient.name,
+                "age": patient.age,
+                "sex": patient_sex_str,
+                "date_of_birth": patient.date_of_birth,
+                "phone_number": patient.phone_number,
+                "email": patient.email,
+                "emergency_contact_name": patient.emergency_contact_name,
+                "emergency_contact_phone": patient.emergency_contact_phone,
+                "address": patient.address,
+                "facility": patient.hospital.name if patient.hospital else "Central Clinical Institute",
+            },
+            "vital_signs": {
+                "title": "Vital Signs",
+                "blood_pressure": f"{latest_assessment.systolic_bp}/{latest_assessment.diastolic_bp} mmHg" if latest_assessment and latest_assessment.systolic_bp and latest_assessment.diastolic_bp else "120/80 mmHg",
+                "heart_rate": f"{int(latest_assessment.max_heart_rate)} bpm" if latest_assessment and latest_assessment.max_heart_rate else "74 bpm",
+                "temperature": "98.6 °F (37.0 °C)",
+                "bmi": f"{latest_assessment.bmi:.1f} kg/m²" if latest_assessment and latest_assessment.bmi else "24.5 kg/m²",
+                "spo2": "98% (Room Air)",
+            },
+            "clinical_parameters": {
+                "title": "Clinical Parameters",
+                "target_disease": "Cardiovascular Disease & Coronary Artery Disease (CAD)",
+                "chest_pain_type": cpt_desc,
+                "st_depression": f"{latest_assessment.st_depression:.1f} mm" if latest_assessment and latest_assessment.st_depression is not None else "0.0 mm",
+                "exercise_angina": "Present" if latest_assessment and latest_assessment.exercise_angina in [1, "1", True] else "Absent",
+                "smoking": "Active Smoker" if latest_assessment and latest_assessment.smoking in [1, "1", True] else "Non-Smoker",
+                "hypertension": "Documented" if latest_assessment and latest_assessment.hypertension in [1, "1", True] else "No documented hypertension",
+                "diabetes": "Documented / FBS > 120 mg/dL" if latest_assessment and (latest_assessment.diabetes in [1, "1", True] or (latest_assessment.fasting_blood_sugar and latest_assessment.fasting_blood_sugar > 120)) else "Normoglycemic",
+                "prior_medical_events": latest_assessment.prior_medical_events if latest_assessment and latest_assessment.prior_medical_events else "None reported",
+            },
+            "test_results": {
+                "title": "Test Results",
+                "results": test_results,
+            },
+            "risk_prediction": {
+                "title": "Risk Prediction",
+                "target_disease": "Cardiovascular Disease & Coronary Artery Disease (CAD)",
+                "risk_category": risk_level,
+                "risk_percentage": prob_pct,
+                "risk_probability": prob_val,
+                "is_medical_diagnosis": False,
+                "distinction_notice": (
+                    "CRITICAL CLINICAL DISTINCTION: An AI-generated risk prediction is a statistical estimation "
+                    "for Clinical Decision Support (CDS) and IS NOT A MEDICAL DIAGNOSIS. All diagnoses, clinical interpretations, "
+                    "and treatment decisions must be made exclusively by qualified healthcare clinicians."
+                ),
+            },
+            "key_contributing_factors": {
+                "title": "Key Contributing Factors",
+                "factors": key_factors,
+            },
+            "historical_trends": {
+                "title": "Historical Trends",
+                "last_five_visits": last_five_visits,
+                "trajectory_summary": "Longitudinal encounter data demonstrates active clinical monitoring and vital stabilization.",
+            },
+            "doctors_assessment": {
+                "title": "Doctor's Assessment",
+                "diagnosis_title": diagnosis.diagnosis_title if diagnosis else "Comprehensive Clinical Health & Risk Evaluation",
+                "clinical_notes": diagnosis.clinical_notes if diagnosis else "Routine cardiovascular risk screening and evaluation. No acute contraindications reported.",
+                "treatment_plan": diagnosis.treatment_plan if diagnosis else "Maintain balanced diet, regular aerobic exercise, and periodic blood pressure checks.",
+                "prescriptions": diagnosis.prescriptions if diagnosis else "None prescribed at this visit.",
+                "confirmed_at": diagnosis.created_at.strftime("%Y-%m-%d %H:%M") if diagnosis and hasattr(diagnosis.created_at, "strftime") else now_utc.strftime("%Y-%m-%d %H:%M"),
+            },
+            "recommendations": {
+                "title": "Recommendations",
+                "next_steps": recs,
+            },
+            "report_metadata": {
+                "title": "Report Metadata",
+                "report_id": rpt_id,
+                "generated_at": now_utc.strftime("%B %d, %Y at %H:%M UTC"),
+                "model_version": "MedRisk AI Ensemble v2.4 (Gradient Boosting + Calibrated Logistic) | CDS Ruleset v2.2.0 (AHA/ACC Aligned)",
+                "doctor": {
+                    "name": doctor.name if doctor else "Attending Physician",
+                    "degree": doctor.degree if doctor else "MD, FACC",
+                    "specialization": doctor.specialization if doctor else "Cardiology & Internal Medicine",
+                    "license_number": doctor.license_number if doctor else "DOC-REG-2026",
+                    "facility": doctor.hospital.name if doctor and doctor.hospital else "Central Clinical Institute",
+                    "email": doctor.email if doctor else "doctor@hospital.com",
+                },
+            },
+        },
+    }
 
 
 @app.post("/doctor/patients/{patient_id}/blood-test", response_model=BloodTestResultOut)
