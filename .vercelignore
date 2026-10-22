@@ -1,35 +1,58 @@
 # =============================================================================
 # .vercelignore — Vercel Frontend-Only Build Configuration
 # =============================================================================
-# The backend (FastAPI) is deployed on Render, NOT Vercel.
-# Vercel only builds the Vite React frontend (frontend/).
-# ALL Python/backend files must be excluded to prevent Vercel from attempting
-# a serverless Python function build (which causes dependency conflicts).
+# Architecture:
+#   - Vercel  → Vite React frontend ONLY  (frontend/ → dist/)
+#   - Render  → FastAPI Python backend    (api/main.py via uvicorn)
+#
+# Predictions are deterministic rule/score-based (calculate_rule_based_risk).
+# XGBoost/SHAP run in background on Render ONLY — not needed by Vercel at all.
+# ALL Python / backend / ML files must be excluded here.
 # =============================================================================
 
-# --- Python backend: exclude entirely ---
+# ── Python backend source ────────────────────────────────────────────────────
 api/
 src/
-models/
-data/
-tests/
-scripts/
-notebooks/
-supabase/
 medical_risk/
 
-# --- Python entrypoints (prevent serverless function detection) ---
-index.py
+# ── ML model artefacts & trained weights ────────────────────────────────────
+models/
+*.joblib
+*.pkl
+*.pickle
+*.h5
+*.pt
+*.pth
+*.onnx
+
+# ── Training data ────────────────────────────────────────────────────────────
+data/
+
+# ── Notebooks & scripts ──────────────────────────────────────────────────────
+notebooks/
+scripts/
+
+# ── Tests ────────────────────────────────────────────────────────────────────
+tests/
+
+# ── Supabase / infra config ──────────────────────────────────────────────────
+supabase/
+
+# ── Python dependency / entrypoint files ─────────────────────────────────────
+# Excluding requirements.txt prevents Vercel from attempting a Python build
 requirements.txt
-Dockerfile
-render.yaml
-pyproject.toml
 Pipfile
 Pipfile.lock
+pyproject.toml
 setup.py
 setup.cfg
+index.py
+Dockerfile
+render.yaml
+run_all.py
+SECURITY_PATCHES.py
 
-# --- Python runtime artifacts ---
+# ── Python runtime artefacts ─────────────────────────────────────────────────
 .venv/
 __pycache__/
 *.pyc
@@ -38,7 +61,7 @@ __pycache__/
 .pytest_cache/
 .python-version
 
-# --- Database files ---
+# ── Database files ───────────────────────────────────────────────────────────
 *.db
 *.db-shm
 *.db-wal
@@ -46,17 +69,18 @@ __pycache__/
 *.sqlite
 *.sqlite3
 
-# --- Environment & secrets ---
+# ── Environment & secrets ────────────────────────────────────────────────────
 .env
 .env.local
 .env.*.local
 .env.example
 
-# --- Dev/build artifacts ---
+# ── Dev / one-off output ─────────────────────────────────────────────────────
 brag-output/
 brag_repo/
+
+# ── Markdown docs not needed by frontend ─────────────────────────────────────
 SECURITY_*.md
-SECURITY_*.py
 IMPLEMENTATION_SUMMARY.md
 COMPLETE_SUMMARY.md
 DATABASE_PERSISTENCE_UPDATE.md
